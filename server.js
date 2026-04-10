@@ -8,7 +8,7 @@ app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; frame-ancestors 'self' https://*.zoom.us");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://appssdk.zoom.us; connect-src 'self' https://*.zoom.us; frame-ancestors 'self' https://*.zoom.us");
   res.setHeader('Referrer-Policy', 'no-referrer');
   // Never cache — Zoom must always fetch fresh HTML/JS
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');

@@ -1,6 +1,7 @@
 // Engagement state
 let engagementData = {};
 let engagementVars = {};   // CustomerID, AppointmentID, etc.
+let sdk = null;            // resolved zoomSdk reference
 
 const CARETALK_BASE = 'https://caretalk360.com/dashboard/patient-teleHealth';
 
@@ -53,7 +54,7 @@ async function fetchVar(shortName) {
   ];
   for (const name of candidates) {
     try {
-      const res = await zoomSdk.getEngagementVariableValue({ name });
+      const res = await sdk.getEngagementVariableValue({ name });
       if (res?.value !== undefined && res.value !== '') {
         log(`Var ${shortName} = ${res.value}`);
         return String(res.value);
@@ -82,7 +83,7 @@ async function openUrl(url) {
   log(`Opening: ${url}`);
   // Try SDK first, then show clickable link as fallback
   try {
-    await zoomSdk.openUrl({ url });
+    await sdk.openUrl({ url });
     return;
   } catch (_) {}
 
@@ -129,14 +130,36 @@ async function triggerScreenpop() {
   btn.disabled = false;
 }
 
+// ── Load SDK dynamically so we can catch load failures ──
+function loadSdkScript() {
+  return new Promise((resolve) => {
+    // Already injected by host?
+    if (typeof zoomSdk !== 'undefined') { resolve(zoomSdk); return; }
+
+    const s = document.createElement('script');
+    s.src = 'https://appssdk.zoom.us/sdk.js';
+    s.onload  = () => resolve(typeof zoomSdk !== 'undefined' ? zoomSdk : null);
+    s.onerror = () => resolve(null);
+    document.head.appendChild(s);
+  });
+}
+
 // ── SDK Init ──
 async function init() {
   try {
     log('Loading Zoom Apps SDK...');
 
+    // Diagnostics — log what Zoom globals exist in this webview
+    const zoomGlobals = Object.keys(window).filter(k => /zoom/i.test(k));
+    log('Zoom globals: ' + (zoomGlobals.join(', ') || 'none'));
+    log('URL: ' + window.location.href);
+
+    sdk = await loadSdkScript();
+    if (!sdk) throw new Error('zoomSdk unavailable — SDK did not load');
+
     // Race config against a 5-second timeout so we never hang forever
     await Promise.race([
-      zoomSdk.config({
+      sdk.config({
         capabilities: [
           'getRunningContext',
           'getEngagementContext', 'getEngagementStatus',
@@ -157,20 +180,20 @@ async function init() {
 
     // Running context
     try {
-      const ctx = await zoomSdk.getRunningContext();
+      const ctx = await sdk.getRunningContext();
       document.getElementById('running-context').textContent = ctx?.context || '—';
     } catch(_) {}
 
     // Agent info
     try {
-      const appCtx = await zoomSdk.getAppContext();
+      const appCtx = await sdk.getAppContext();
       document.getElementById('agent-name').textContent =
         appCtx?.user?.name || appCtx?.user?.email || '—';
     } catch(_) {}
 
     // Engagement context + variables
     try {
-      const engCtx = await zoomSdk.getEngagementContext();
+      const engCtx = await sdk.getEngagementContext();
       updateEngagementUI(engCtx);
       log(`Engagement: ${engCtx?.engagementId}`);
       await loadEngagementVars();
@@ -178,25 +201,25 @@ async function init() {
 
     // Engagement status
     try {
-      const engStatus = await zoomSdk.getEngagementStatus();
+      const engStatus = await sdk.getEngagementStatus();
       renderEngagementStatus(engStatus?.status);
       engagementData.status = engStatus?.status;
     } catch(_) {}
 
     // Event listeners
-    zoomSdk.onEngagementStatusChange((evt) => {
+    sdk.onEngagementStatusChange((evt) => {
       renderEngagementStatus(evt?.status);
       engagementData.status = evt?.status;
       log(`Status → ${evt?.status}`);
     });
 
-    zoomSdk.onEngagementContextChange(async (evt) => {
+    sdk.onEngagementContextChange(async (evt) => {
       updateEngagementUI(evt);
       log(`Context → ${evt?.engagementId}`);
       await loadEngagementVars();
     });
 
-    zoomSdk.onRunningContextChange((evt) => {
+    sdk.onRunningContextChange((evt) => {
       document.getElementById('running-context').textContent = evt?.context || '—';
     });
 
