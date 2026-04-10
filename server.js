@@ -102,10 +102,12 @@ app.post('/lookup', async (req, res) => {
   }
 });
 
-// ── Cache-busting alias — update /app, /v9, etc. in Zoom Marketplace to force reload ──
-app.get('/app', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+// ── Cache-busting aliases — bump path in Zoom Marketplace Home URL to force reload ──
+app.get('/app', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/v2',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/v3',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/v4',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/v5',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 // ── Ping endpoint ──
 app.get('/ping', (req, res) => {
