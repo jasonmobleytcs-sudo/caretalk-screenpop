@@ -296,19 +296,18 @@
           log('Customer context loaded ✓');
         }
 
-        // Open in the system browser via Zoom SDK (never falls back to window.open,
-        // which stays inside Zoom's embedded webview)
+        // Render URL as a real anchor — Zoom Contact Center opens <a target="_blank">
+        // links in the system browser, unlike window.open or zoomSdk.openUrl
         if (data.url) {
-          log(`Opening: ${data.url}`);
-          try {
-            await zoomSdk.openUrl({ url: data.url });
-            result.textContent = '✓ Screenpop opened!';
-            log('Opened in system browser ✓');
-          } catch (sdkErr) {
-            log(`openUrl failed: ${sdkErr.message}`);
-            result.className = 'result error';
-            result.textContent = '✗ Could not open URL: ' + sdkErr.message;
-          }
+          log(`URL: ${data.url}`);
+          result.innerHTML =
+            `✓ <a href="${data.url}" target="_blank" rel="noopener noreferrer"
+                style="color:inherit;font-weight:700;">Open Screenpop ↗</a>`;
+          result.className = 'result success';
+          result.style.display = 'block';
+
+          // Also try SDK openUrl as a belt-and-suspenders attempt
+          try { await zoomSdk.openUrl({ url: data.url }); } catch (_) {}
         } else {
           result.textContent = '✓ Screenpop triggered!';
           log('No URL returned from Prismatic.');
@@ -334,16 +333,22 @@
   async function init() {
     try {
       log('Loading Zoom Apps SDK...');
-      await zoomSdk.config({
-        capabilities: [
-          'getRunningContext', 'getAppContext',
-          'getEngagementContext', 'getEngagementStatus',
-          'getEngagementVariableValue', 'getAppVariableList',
-          'onEngagementContextChange', 'onEngagementStatusChange',
-          'onEngagementVariableValueChange', 'onRunningContextChange',
-          'openUrl',
-        ]
-      });
+
+      // Race config against a 5-second timeout so we never hang forever
+      await Promise.race([
+        zoomSdk.config({
+          capabilities: [
+            'getRunningContext',
+            'getEngagementContext', 'getEngagementStatus',
+            'onEngagementContextChange', 'onEngagementStatusChange',
+            'onRunningContextChange',
+            'openUrl',
+          ]
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('SDK config timed out after 5s')), 5000)
+        )
+      ]);
 
       setStatus('SDK Ready ✓');
       log('SDK initialized.');
