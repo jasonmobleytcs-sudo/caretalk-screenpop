@@ -296,16 +296,18 @@
           log('Customer context loaded ✓');
         }
 
-        // Open careTalkOpenUrl in external browser
+        // Open in the system browser via Zoom SDK (never falls back to window.open,
+        // which stays inside Zoom's embedded webview)
         if (data.url) {
           log(`Opening: ${data.url}`);
           try {
             await zoomSdk.openUrl({ url: data.url });
             result.textContent = '✓ Screenpop opened!';
+            log('Opened in system browser ✓');
           } catch (sdkErr) {
-            log(`SDK openUrl fallback: ${sdkErr.message}`);
-            window.open(data.url, '_blank');
-            result.textContent = '✓ Screenpop opened!';
+            log(`openUrl failed: ${sdkErr.message}`);
+            result.className = 'result error';
+            result.textContent = '✗ Could not open URL: ' + sdkErr.message;
           }
         } else {
           result.textContent = '✓ Screenpop triggered!';
