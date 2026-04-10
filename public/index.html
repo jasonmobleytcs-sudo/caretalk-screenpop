@@ -61,32 +61,34 @@
     .badge.ended  { background: #f8d7da; color: #842029; }
     .badge.unknown{ background: #e2e3e5; color: #555; }
 
-    /* ── Screenpop Button ── */
-    .screenpop-btn {
-      width: 100%;
-      padding: 14px;
+    /* ── Phone Lookup ── */
+    .lookup-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .lookup-row input {
+      flex: 1;
+      padding: 10px 12px;
+      border: 1.5px solid #d0e1fd;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+    }
+    .lookup-row input:focus { border-color: #2372eb; }
+    .lookup-row button {
+      padding: 10px 16px;
       background: #2372eb;
       color: white;
       border: none;
-      border-radius: 10px;
-      font-size: 15px;
+      border-radius: 8px;
+      font-size: 14px;
       font-weight: 600;
       cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      transition: background 0.15s, transform 0.1s;
-      margin-bottom: 14px;
+      white-space: nowrap;
     }
-    .screenpop-btn:hover  { background: #1a5ecc; }
-    .screenpop-btn:active { transform: scale(0.98); }
-    .screenpop-btn:disabled {
-      background: #a0b8e8;
-      cursor: not-allowed;
-      transform: none;
-    }
-    .screenpop-btn .icon { font-size: 20px; }
+    .lookup-row button:hover    { background: #1a5ecc; }
+    .lookup-row button:disabled { background: #a0b8e8; cursor: not-allowed; }
 
     .result {
       padding: 10px 14px;
@@ -117,14 +119,15 @@
 <header>
   <span>🖥️</span> Caretalk Screenpop
 </header>
-<div class="status-bar" id="sdk-status">v8 — Initializing SDK...</div>
+<div class="status-bar" id="sdk-status">Ready — enter caller phone to look up</div>
 
 <div class="content">
 
-  <!-- Screenpop Button -->
-  <button class="screenpop-btn" id="screenpop-btn" onclick="triggerScreenpop()" disabled>
-    <span class="icon">🖥️</span> Launch Screenpop
-  </button>
+  <!-- Phone Lookup -->
+  <div class="lookup-row">
+    <input id="phone-input" type="tel" placeholder="Caller phone  e.g. 5158830400" />
+    <button id="lookup-btn" onclick="lookupEngagement()">Look Up</button>
+  </div>
   <div class="result" id="result"></div>
 
   <!-- Engagement Info -->

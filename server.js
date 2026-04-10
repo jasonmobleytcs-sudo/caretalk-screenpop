@@ -10,7 +10,6 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://appssdk.zoom.us; connect-src 'self' https://*.zoom.us; frame-ancestors 'self' https://*.zoom.us");
   res.setHeader('Referrer-Policy', 'no-referrer');
-  // Never cache — Zoom must always fetch fresh HTML/JS
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
@@ -25,95 +24,68 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Prismatic Webhook URLs ──
-const WEBHOOKS = {
-  // Helper flow: wraps context + returns careTalkOpenUrl
-  screenpop:   'https://hooks.prismatic.io/trigger/SW5zdGFuY2VGbG93Q29uZmlnOmM5ZGQ2ZDZiLWMzMzgtNDYyOS1iMjIyLTFhY2FjZjdjY2ZiYQ==',
-  // Add your other webhook URLs here:
-  // lookup:   'https://hooks.prismatic.io/trigger/...',
-  // restore:  'https://hooks.prismatic.io/trigger/...',
-  // save:     'https://hooks.prismatic.io/trigger/...',
-};
+// ── In-memory engagement store (keyed by normalized phone number) ──
+// Zoom CC flow POSTs here via HTTP Request widget after setting variables.
+// Entries expire after 4 hours.
+const engagementStore = new Map();
+const STORE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
-// ── Helper: parse Prismatic response by flow type ──
-function parsePrismaticResponse(json, flow) {
-  if (flow === 'screenpop') {
-    // Shape: { ok, context: {...}, careTalkOpenUrl: "https://..." }
-    return {
-      ok:         json.ok,
-      url:        json.careTalkOpenUrl || null,
-      customer:   json.context || {},
-    };
-  }
-
-  // CRM Lookup / Restore / Save — top-level payload
-  // Shape: { ok, matched, customerId, appointmentId, customerPhone, stateId, state, ... }
-  return {
-    ok:       json.ok,
-    url:      null,
-    customer: {
-      customerId:       json.customerId,
-      eligibilityId:    json.eligibilityId,
-      appointmentId:    json.appointmentId,
-      customerPhone:    json.customerPhone,
-      stateId:          json.stateId,
-      state:            json.state,
-      recommendedRoute: json.recommendedRoute,
-      partnerName:      json.partnerName,
-      matched:          json.matched,
-      matchType:        json.matchType,
-    },
-  };
+function normalizePhone(raw = '') {
+  return String(raw).replace(/\D/g, '').slice(-10); // last 10 digits
 }
 
-// ── POST /screenpop — trigger helper flow, get careTalkOpenUrl ──
-app.post('/screenpop', async (req, res) => {
-  try {
-    console.log('Screenpop triggered:', req.body);
-    const response = await fetch(WEBHOOKS.screenpop, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
-    });
-
-    const text = await response.text();
-    console.log('Prismatic screenpop response:', response.status, text);
-
-    const json = JSON.parse(text);
-    const parsed = parsePrismaticResponse(json, 'screenpop');
-
-    res.json({ success: true, ...parsed });
-  } catch (err) {
-    console.error('Screenpop error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+function pruneExpired() {
+  const now = Date.now();
+  for (const [key, val] of engagementStore) {
+    if (now - val.ts > STORE_TTL_MS) engagementStore.delete(key);
   }
+}
+
+// ── POST /flow-data — called by Zoom CC flow HTTP Request widget ──
+// Body: { phone, customerId, appointmentId, stateId, eligibilityId, partnerName, recommendedRoute }
+app.post('/flow-data', (req, res) => {
+  pruneExpired();
+  const phone = normalizePhone(req.body.phone);
+  if (!phone) return res.status(400).json({ ok: false, error: 'phone required' });
+
+  engagementStore.set(phone, {
+    customerId:       req.body.customerId       || '',
+    appointmentId:    req.body.appointmentId    || '',
+    stateId:          req.body.stateId          || '',
+    eligibilityId:    req.body.eligibilityId    || '',
+    partnerName:      req.body.partnerName      || '',
+    recommendedRoute: req.body.recommendedRoute || '',
+    phone,
+    ts: Date.now(),
+  });
+
+  console.log(`flow-data stored for ${phone}:`, engagementStore.get(phone));
+  res.json({ ok: true });
 });
 
-// ── POST /lookup — CRM State Lookup by phone ──
-app.post('/lookup', async (req, res) => {
-  try {
-    console.log('CRM Lookup:', req.body);
-    const response = await fetch(WEBHOOKS.lookup, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
-    });
-    const json = await response.json();
-    const parsed = parsePrismaticResponse(json, 'lookup');
-    res.json({ success: true, ...parsed });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+// ── GET /get-engagement?phone=XXXXXXXXXX — panel looks up engagement by caller phone ──
+app.get('/get-engagement', (req, res) => {
+  pruneExpired();
+  const phone = normalizePhone(req.query.phone);
+  const data  = engagementStore.get(phone);
+
+  if (!data) {
+    return res.json({ ok: false, error: 'No engagement found for that number' });
   }
+
+  const url = `https://caretalk360.com/dashboard/patient-teleHealth` +
+              `?patientId=${encodeURIComponent(data.customerId)}` +
+              `&appointmentId=${encodeURIComponent(data.appointmentId)}`;
+
+  res.json({ ok: true, url, ...data });
 });
 
-// ── Cache-busting aliases — bump path in Zoom Marketplace Home URL to force reload ──
-app.get('/app', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/v2',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/v3',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/v4',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/v5',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+// ── Cache-busting aliases ──
+['app','v2','v3','v4','v5','v6','v7','v8','v9'].forEach(p =>
+  app.get(`/${p}`, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')))
+);
 
-// ── Ping endpoint ──
+// ── Ping ──
 app.get('/ping', (req, res) => {
   console.log('PING! User-Agent:', req.headers['user-agent']);
   res.json({ ok: true });
