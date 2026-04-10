@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Caretalk Screenpop</title>
+  <script>
+    // Ping server immediately on page load so we can confirm the page is loading in Zoom
+    fetch(window.location.origin + '/ping').catch(() => {});
+  </script>
+  <script src="https://appssdk.zoom.us/sdk.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f4f6fb;
+      color: #1a1a2e;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: #2372eb;
+      color: white;
+      padding: 14px 20px;
+      font-size: 16px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .status-bar {
+      padding: 8px 20px;
+      font-size: 12px;
+      background: #e8f0fe;
+      color: #2372eb;
+      font-weight: 500;
+      border-bottom: 1px solid #d0e1fd;
+    }
+    .content { padding: 16px; flex: 1; overflow-y: auto; }
+    .card {
+      background: white;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .card h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #aaa;
+      margin-bottom: 10px;
+    }
+    .field { margin-bottom: 8px; font-size: 14px; }
+    .field label { color: #999; font-size: 11px; display: block; margin-bottom: 2px; }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge.active { background: #d4edda; color: #1a7a3a; }
+    .badge.idle   { background: #fff3cd; color: #856404; }
+    .badge.ended  { background: #f8d7da; color: #842029; }
+    .badge.unknown{ background: #e2e3e5; color: #555; }
+
+    /* ── Screenpop Button ── */
+    .screenpop-btn {
+      width: 100%;
+      padding: 14px;
+      background: #2372eb;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: background 0.15s, transform 0.1s;
+      margin-bottom: 14px;
+    }
+    .screenpop-btn:hover  { background: #1a5ecc; }
+    .screenpop-btn:active { transform: scale(0.98); }
+    .screenpop-btn:disabled {
+      background: #a0b8e8;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .screenpop-btn .icon { font-size: 20px; }
+
+    .result {
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 14px;
+      display: none;
+    }
+    .result.success { background: #d4edda; color: #1a7a3a; display: block; }
+    .result.error   { background: #f8d7da; color: #842029; display: block; }
+
+    #log {
+      font-size: 11px;
+      color: #666;
+      max-height: 100px;
+      overflow-y: auto;
+      background: #f8f9fa;
+      border-radius: 6px;
+      padding: 8px;
+    }
+    .log-entry { margin-bottom: 3px; }
+    .log-entry time { color: #bbb; margin-right: 5px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <span>🖥️</span> Caretalk Screenpop
+</header>
+<div class="status-bar" id="sdk-status">Initializing SDK...</div>
+
+<div class="content">
+
+  <!-- Screenpop Button -->
+  <button class="screenpop-btn" id="screenpop-btn" onclick="triggerScreenpop()" disabled>
+    <span class="icon">🖥️</span> Launch Screenpop
+  </button>
+  <div class="result" id="result"></div>
+
+  <!-- Engagement Info -->
+  <div class="card">
+    <h3>Engagement</h3>
+    <div class="field">
+      <label>Status</label>
+      <span id="eng-status"><span class="badge unknown">—</span></span>
+    </div>
+    <div class="field">
+      <label>Engagement ID</label>
+      <span id="eng-id">—</span>
+    </div>
+    <div class="field">
+      <label>Channel</label>
+      <span id="eng-channel">—</span>
+    </div>
+    <div class="field">
+      <label>Direction</label>
+      <span id="eng-direction">—</span>
+    </div>
+    <div class="field">
+      <label>Consumer</label>
+      <span id="eng-consumer">—</span>
+    </div>
+  </div>
+
+  <!-- Customer Info (populated after screenpop) -->
+  <div class="card" id="customer-card" style="display:none">
+    <h3>Customer</h3>
+    <div class="field">
+      <label>Customer ID</label>
+      <span id="cust-id">—</span>
+    </div>
+    <div class="field">
+      <label>Appointment ID</label>
+      <span id="cust-appt">—</span>
+    </div>
+    <div class="field">
+      <label>Phone</label>
+      <span id="cust-phone">—</span>
+    </div>
+    <div class="field">
+      <label>State</label>
+      <span id="cust-state">—</span>
+    </div>
+    <div class="field">
+      <label>Partner</label>
+      <span id="cust-partner">—</span>
+    </div>
+    <div class="field">
+      <label>Recommended Route</label>
+      <span id="cust-route">—</span>
+    </div>
+  </div>
+
+  <!-- Agent Info -->
+  <div class="card">
+    <h3>Agent</h3>
+    <div class="field">
+      <label>Name</label>
+      <span id="agent-name">—</span>
+    </div>
+    <div class="field">
+      <label>Context</label>
+      <span id="running-context">—</span>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="card">
+    <h3>Activity Log</h3>
+    <div id="log"></div>
+  </div>
+
+</div>
+
+<script>
+  // Engagement state
+  let engagementData = {};
+
+  function log(msg) {
+    const el = document.getElementById('log');
+    const now = new Date().toLocaleTimeString();
+    el.innerHTML += `<div class="log-entry"><time>${now}</time>${msg}</div>`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function setStatus(text, type) {
+    const bar = document.getElementById('sdk-status');
+    bar.textContent = text;
+    if (type === 'error') {
+      bar.style.color = '#842029';
+      bar.style.background = '#f8d7da';
+    } else {
+      bar.style.color = '#2372eb';
+      bar.style.background = '#e8f0fe';
+    }
+  }
+
+  function renderEngagementStatus(status) {
+    const cls = { active: 'active', idle: 'idle', ended: 'ended' }[status?.toLowerCase()] || 'unknown';
+    document.getElementById('eng-status').innerHTML = `<span class="badge ${cls}">${status || '—'}</span>`;
+  }
+
+  function updateEngagementUI(ctx) {
+    if (!ctx) return;
+    engagementData = { ...engagementData, ...ctx };
+    if (ctx.engagementId)  document.getElementById('eng-id').textContent = ctx.engagementId;
+    if (ctx.channel)       document.getElementById('eng-channel').textContent = ctx.channel;
+    if (ctx.direction)     document.getElementById('eng-direction').textContent = ctx.direction;
+    if (ctx.consumer)      document.getElementById('eng-consumer').textContent =
+      ctx.consumer?.phoneNumber || ctx.consumer?.name || ctx.consumer || '—';
+  }
+
+  // ── Screenpop Button Handler ──
+  async function triggerScreenpop() {
+    const btn = document.getElementById('screenpop-btn');
+    const result = document.getElementById('result');
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="icon">⏳</span> Launching...';
+    result.style.display = 'none';
+    result.className = 'result';
+
+    const payload = {
+      engagementId:  engagementData.engagementId  || null,
+      channel:       engagementData.channel        || null,
+      direction:     engagementData.direction      || null,
+      consumer:      engagementData.consumer       || null,
+      agentName:     document.getElementById('agent-name').textContent,
+      timestamp:     new Date().toISOString(),
+    };
+
+    log(`Screenpop triggered → ${JSON.stringify(payload)}`);
+
+    // Use absolute URL so it works inside Zoom's embedded browser
+    const serverUrl = window.location.origin + '/screenpop';
+    log(`Calling: ${serverUrl}`);
+
+    try {
+      const res = await fetch(serverUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      log(`Response status: ${res.status}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const data = await res.json();
+
+      if (data.success) {
+        // Populate customer card from context
+        if (data.customer && Object.keys(data.customer).length) {
+          const c = data.customer;
+          document.getElementById('cust-id').textContent      = c.customerId    || c.eligibilityId || '—';
+          document.getElementById('cust-appt').textContent    = c.appointmentId || '—';
+          document.getElementById('cust-phone').textContent   = c.customerPhone || '—';
+          document.getElementById('cust-state').textContent   = c.state         || '—';
+          document.getElementById('cust-partner').textContent = c.partnerName   || '—';
+          document.getElementById('cust-route').textContent   = c.recommendedRoute || '—';
+          document.getElementById('customer-card').style.display = 'block';
+          log('Customer context loaded ✓');
+        }
+
+        // Open careTalkOpenUrl in external browser
+        if (data.url) {
+          log(`Opening: ${data.url}`);
+          try {
+            await zoomSdk.openUrl({ url: data.url });
+            result.textContent = '✓ Screenpop opened!';
+          } catch (sdkErr) {
+            log(`SDK openUrl fallback: ${sdkErr.message}`);
+            window.open(data.url, '_blank');
+            result.textContent = '✓ Screenpop opened!';
+          }
+        } else {
+          result.textContent = '✓ Screenpop triggered!';
+          log('No URL returned from Prismatic.');
+        }
+        result.className = 'result success';
+        result.style.display = 'block';
+        log('Done ✓');
+      } else {
+        throw new Error(data.error || 'Unknown error');
+      }
+    } catch (err) {
+      result.className = 'result error';
+      result.textContent = '✗ Failed: ' + err.message;
+      result.style.display = 'block';
+      log('Screenpop error: ' + err.message);
+    }
+
+    btn.innerHTML = '<span class="icon">🖥️</span> Launch Screenpop';
+    btn.disabled = false;
+  }
+
+  // ── SDK Init ──
+  async function init() {
+    try {
+      log('Loading Zoom Apps SDK...');
+      await zoomSdk.config({
+        capabilities: [
+          'getRunningContext', 'getAppContext',
+          'getEngagementContext', 'getEngagementStatus',
+          'getEngagementVariableValue', 'getAppVariableList',
+          'onEngagementContextChange', 'onEngagementStatusChange',
+          'onEngagementVariableValueChange', 'onRunningContextChange',
+          'openUrl',
+        ]
+      });
+
+      setStatus('SDK Ready ✓');
+      log('SDK initialized.');
+      document.getElementById('screenpop-btn').disabled = false;
+
+      // Running context
+      const ctx = await zoomSdk.getRunningContext();
+      document.getElementById('running-context').textContent = ctx?.context || '—';
+
+      // Agent info
+      try {
+        const appCtx = await zoomSdk.getAppContext();
+        document.getElementById('agent-name').textContent =
+          appCtx?.user?.name || appCtx?.user?.email || '—';
+      } catch(e) {}
+
+      // Engagement context
+      try {
+        const engCtx = await zoomSdk.getEngagementContext();
+        updateEngagementUI(engCtx);
+        log(`Engagement: ${engCtx?.engagementId}`);
+      } catch(e) { log('No active engagement.'); }
+
+      // Engagement status
+      try {
+        const engStatus = await zoomSdk.getEngagementStatus();
+        renderEngagementStatus(engStatus?.status);
+        engagementData.status = engStatus?.status;
+      } catch(e) {}
+
+      // Event listeners
+      zoomSdk.onEngagementStatusChange((evt) => {
+        renderEngagementStatus(evt?.status);
+        engagementData.status = evt?.status;
+        log(`Status → ${evt?.status}`);
+      });
+
+      zoomSdk.onEngagementContextChange((evt) => {
+        updateEngagementUI(evt);
+        log(`Context → ${evt?.engagementId}`);
+      });
+
+      zoomSdk.onRunningContextChange((evt) => {
+        document.getElementById('running-context').textContent = evt?.context || '—';
+      });
+
+    } catch (err) {
+      setStatus('SDK Error: ' + err.message, 'error');
+      log('Error: ' + err.message);
+      // Still enable button for testing outside Zoom
+      document.getElementById('screenpop-btn').disabled = false;
+    }
+  }
+
+  init();
+</script>
+</body>
+</html>
