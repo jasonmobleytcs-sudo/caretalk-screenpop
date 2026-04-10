@@ -1,5 +1,15 @@
 // Engagement state
 let engagementData = {};
+let engagementVars = {};   // CustomerID, AppointmentID, etc.
+
+const CARETALK_BASE = 'https://caretalk360.com/dashboard/patient-teleHealth';
+
+function buildScreenpopUrl() {
+  const cid = engagementVars.CustomerID || '';
+  const aid = engagementVars.AppointmentID || '';
+  if (!cid && !aid) return null;
+  return `${CARETALK_BASE}?patientId=${encodeURIComponent(cid)}&appointmentId=${encodeURIComponent(aid)}`;
+}
 
 function log(msg) {
   const el = document.getElementById('log');
@@ -35,9 +45,59 @@ function updateEngagementUI(ctx) {
     ctx.consumer?.phoneNumber || ctx.consumer?.name || ctx.consumer || '—';
 }
 
+// Fetch a single engagement variable — tries full namespace then short name
+async function fetchVar(shortName) {
+  const candidates = [
+    `global_custom.CTH.${shortName}`,
+    shortName,
+  ];
+  for (const name of candidates) {
+    try {
+      const res = await zoomSdk.getEngagementVariableValue({ name });
+      if (res?.value !== undefined && res.value !== '') {
+        log(`Var ${shortName} = ${res.value}`);
+        return String(res.value);
+      }
+    } catch (_) {}
+  }
+  return '';
+}
+
+async function loadEngagementVars() {
+  engagementVars.CustomerID    = await fetchVar('CustomerID');
+  engagementVars.AppointmentID = await fetchVar('AppointmentID');
+  engagementVars.EligibilityID = await fetchVar('EligibilityID');
+  engagementVars.StateCodeID   = await fetchVar('StateCodeID');
+
+  // Update customer card
+  if (engagementVars.CustomerID || engagementVars.AppointmentID) {
+    document.getElementById('cust-id').textContent   = engagementVars.CustomerID    || '—';
+    document.getElementById('cust-appt').textContent = engagementVars.AppointmentID || '—';
+    document.getElementById('customer-card').style.display = 'block';
+  }
+}
+
+// ── Open URL in system browser ──
+async function openUrl(url) {
+  log(`Opening: ${url}`);
+  // Try SDK first, then show clickable link as fallback
+  try {
+    await zoomSdk.openUrl({ url });
+    return;
+  } catch (_) {}
+
+  // Fallback: render a link the agent can click
+  const result = document.getElementById('result');
+  result.innerHTML =
+    `✓ <a href="${url}" target="_blank" rel="noopener noreferrer"
+        style="color:inherit;font-weight:700;">Click to open in browser ↗</a>`;
+  result.className = 'result success';
+  result.style.display = 'block';
+}
+
 // ── Screenpop Button Handler ──
 async function triggerScreenpop() {
-  const btn = document.getElementById('screenpop-btn');
+  const btn    = document.getElementById('screenpop-btn');
   const result = document.getElementById('result');
 
   btn.disabled = true;
@@ -45,74 +105,25 @@ async function triggerScreenpop() {
   result.style.display = 'none';
   result.className = 'result';
 
-  const payload = {
-    engagementId:  engagementData.engagementId  || null,
-    channel:       engagementData.channel        || null,
-    direction:     engagementData.direction      || null,
-    consumer:      engagementData.consumer       || null,
-    agentName:     document.getElementById('agent-name').textContent,
-    timestamp:     new Date().toISOString(),
-  };
+  const url = buildScreenpopUrl();
 
-  log(`Screenpop triggered → ${JSON.stringify(payload)}`);
-
-  const serverUrl = window.location.origin + '/screenpop';
-  log(`Calling: ${serverUrl}`);
-
-  try {
-    const res = await fetch(serverUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    log(`Response status: ${res.status}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const data = await res.json();
-
-    if (data.success) {
-      // Populate customer card from context
-      if (data.customer && Object.keys(data.customer).length) {
-        const c = data.customer;
-        document.getElementById('cust-id').textContent      = c.customerId    || c.eligibilityId || '—';
-        document.getElementById('cust-appt').textContent    = c.appointmentId || '—';
-        document.getElementById('cust-phone').textContent   = c.customerPhone || '—';
-        document.getElementById('cust-state').textContent   = c.state         || '—';
-        document.getElementById('cust-partner').textContent = c.partnerName   || '—';
-        document.getElementById('cust-route').textContent   = c.recommendedRoute || '—';
-        document.getElementById('customer-card').style.display = 'block';
-        log('Customer context loaded ✓');
-      }
-
-      // Render URL as a real anchor — Zoom Contact Center opens <a target="_blank">
-      // links in the system browser, unlike window.open or zoomSdk.openUrl
-      if (data.url) {
-        log(`URL: ${data.url}`);
-        result.innerHTML =
-          `✓ <a href="${data.url}" target="_blank" rel="noopener noreferrer"
-              style="color:inherit;font-weight:700;">Open Screenpop ↗</a>`;
-        result.className = 'result success';
-        result.style.display = 'block';
-
-        // Also try SDK openUrl as a belt-and-suspenders attempt
-        try { await zoomSdk.openUrl({ url: data.url }); } catch (_) {}
-      } else {
-        result.textContent = '✓ Screenpop triggered!';
-        log('No URL returned from Prismatic.');
-      }
-      result.className = 'result success';
-      result.style.display = 'block';
-      log('Done ✓');
-    } else {
-      throw new Error(data.error || 'Unknown error');
-    }
-  } catch (err) {
+  if (!url) {
     result.className = 'result error';
-    result.textContent = '✗ Failed: ' + err.message;
+    result.textContent = '✗ No CustomerID or AppointmentID found in engagement.';
     result.style.display = 'block';
-    log('Screenpop error: ' + err.message);
+    log('No variables available — cannot build URL.');
+    btn.innerHTML = '<span class="icon">🖥️</span> Launch Screenpop';
+    btn.disabled = false;
+    return;
   }
+
+  log(`Screenpop URL: ${url}`);
+  await openUrl(url);
+
+  result.className = 'result success';
+  result.textContent = result.querySelector('a') ? result.textContent : '✓ Screenpop opened!';
+  result.style.display = 'block';
+  log('Done ✓');
 
   btn.innerHTML = '<span class="icon">🖥️</span> Launch Screenpop';
   btn.disabled = false;
@@ -129,6 +140,7 @@ async function init() {
         capabilities: [
           'getRunningContext',
           'getEngagementContext', 'getEngagementStatus',
+          'getEngagementVariableValue',
           'onEngagementContextChange', 'onEngagementStatusChange',
           'onRunningContextChange',
           'openUrl',
@@ -144,29 +156,32 @@ async function init() {
     document.getElementById('screenpop-btn').disabled = false;
 
     // Running context
-    const ctx = await zoomSdk.getRunningContext();
-    document.getElementById('running-context').textContent = ctx?.context || '—';
+    try {
+      const ctx = await zoomSdk.getRunningContext();
+      document.getElementById('running-context').textContent = ctx?.context || '—';
+    } catch(_) {}
 
     // Agent info
     try {
       const appCtx = await zoomSdk.getAppContext();
       document.getElementById('agent-name').textContent =
         appCtx?.user?.name || appCtx?.user?.email || '—';
-    } catch(e) {}
+    } catch(_) {}
 
-    // Engagement context
+    // Engagement context + variables
     try {
       const engCtx = await zoomSdk.getEngagementContext();
       updateEngagementUI(engCtx);
       log(`Engagement: ${engCtx?.engagementId}`);
-    } catch(e) { log('No active engagement.'); }
+      await loadEngagementVars();
+    } catch(e) { log('No active engagement yet.'); }
 
     // Engagement status
     try {
       const engStatus = await zoomSdk.getEngagementStatus();
       renderEngagementStatus(engStatus?.status);
       engagementData.status = engStatus?.status;
-    } catch(e) {}
+    } catch(_) {}
 
     // Event listeners
     zoomSdk.onEngagementStatusChange((evt) => {
@@ -175,9 +190,10 @@ async function init() {
       log(`Status → ${evt?.status}`);
     });
 
-    zoomSdk.onEngagementContextChange((evt) => {
+    zoomSdk.onEngagementContextChange(async (evt) => {
       updateEngagementUI(evt);
       log(`Context → ${evt?.engagementId}`);
+      await loadEngagementVars();
     });
 
     zoomSdk.onRunningContextChange((evt) => {
@@ -187,7 +203,6 @@ async function init() {
   } catch (err) {
     setStatus('SDK Error: ' + err.message, 'error');
     log('Error: ' + err.message);
-    // Still enable button for testing outside Zoom
     document.getElementById('screenpop-btn').disabled = false;
   }
 }
