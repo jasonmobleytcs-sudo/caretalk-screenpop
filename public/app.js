@@ -84,10 +84,11 @@ document.addEventListener('DOMContentLoaded', () => {
   setStatus('Ready — enter caller phone to look up');
   log('App loaded. Enter the caller\'s phone number to get the CareTalk360 link.');
 
-  const input = document.getElementById('phone-input');
-  if (input) {
-    input.addEventListener('keydown', e => {
+  document.getElementById('lookup-btn')
+    .addEventListener('click', lookupEngagement);
+
+  document.getElementById('phone-input')
+    .addEventListener('keydown', e => {
       if (e.key === 'Enter') lookupEngagement();
     });
-  }
 });
