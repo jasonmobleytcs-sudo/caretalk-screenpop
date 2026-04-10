@@ -102,6 +102,11 @@ app.post('/lookup', async (req, res) => {
   }
 });
 
+// ── Cache-busting alias — update /app, /v9, etc. in Zoom Marketplace to force reload ──
+app.get('/app', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // ── Ping endpoint ──
 app.get('/ping', (req, res) => {
   console.log('PING! User-Agent:', req.headers['user-agent']);
