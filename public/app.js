@@ -1,5 +1,9 @@
-const CARETALK_BASE = 'https://caretalk360.com/dashboard/patient-teleHealth';
+const POLL_MS = 3000; // check for new calls every 3 seconds
 
+// Only trigger on calls that arrive AFTER this panel loaded
+let lastSeenTs = Date.now();
+
+// ── Helpers ──
 function log(msg) {
   const el = document.getElementById('log');
   if (!el) return;
@@ -12,15 +16,81 @@ function setStatus(text, type) {
   const bar = document.getElementById('sdk-status');
   if (!bar) return;
   bar.textContent = text;
-  bar.style.color      = type === 'error' ? '#842029' : type === 'success' ? '#1a7a3a' : '#2372eb';
-  bar.style.background = type === 'error' ? '#f8d7da' : type === 'success' ? '#d4edda'  : '#e8f0fe';
+  bar.style.color      = type === 'error'   ? '#842029'
+                       : type === 'success'  ? '#1a7a3a'
+                       : type === 'incoming' ? '#7b3f00'
+                       : '#2372eb';
+  bar.style.background = type === 'error'   ? '#f8d7da'
+                       : type === 'success'  ? '#d4edda'
+                       : type === 'incoming' ? '#fff3cd'
+                       : '#e8f0fe';
 }
 
 function normalizePhone(raw) {
-  return raw.replace(/\D/g, '').slice(-10);
+  return String(raw).replace(/\D/g, '').slice(-10);
 }
 
-// ── Phone Lookup ──
+function populateCard(data) {
+  document.getElementById('cust-id').textContent         = data.customerId       || '—';
+  document.getElementById('cust-appt').textContent       = data.appointmentId    || '—';
+  document.getElementById('cust-phone').textContent      = data.phone            || '—';
+  document.getElementById('cust-state').textContent      = data.stateId          || '—';
+  document.getElementById('cust-partner').textContent    = data.partnerName      || '—';
+  document.getElementById('cust-route').textContent      = data.recommendedRoute || '—';
+  document.getElementById('customer-card').style.display = 'block';
+}
+
+function showScreenpop(url, autoOpened) {
+  const result = document.getElementById('result');
+  if (autoOpened) {
+    result.innerHTML =
+      `✅ CareTalk360 opened automatically! &nbsp;` +
+      `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:inherit;font-weight:700;">Open again ↗</a>`;
+    result.className = 'result success';
+  } else {
+    // window.open was blocked — show a giant one-click button
+    result.innerHTML =
+      `<a href="${url}" target="_blank" rel="noopener noreferrer" id="screenpop-link">` +
+      `🖥️&nbsp; OPEN CARETALK360 ↗</a>`;
+    result.className = 'result screenpop';
+  }
+  result.style.display = 'block';
+}
+
+// ── Auto-poll for new calls ──
+async function pollLatest() {
+  try {
+    const res  = await fetch(`${window.location.origin}/latest-engagement`);
+    const data = await res.json();
+
+    if (data.ok && data.ts > lastSeenTs) {
+      lastSeenTs = data.ts; // mark as seen so we don't re-trigger
+
+      setStatus('📞 Incoming transfer detected!', 'incoming');
+      log(`Transfer detected — caller: ${data.phone}`);
+
+      // Fill phone field + customer card
+      document.getElementById('phone-input').value = data.phone;
+      populateCard(data);
+
+      // Attempt to open in system browser automatically
+      const win = window.open(data.url, '_blank');
+      const autoOpened = win && !win.closed;
+
+      showScreenpop(data.url, autoOpened);
+
+      if (!autoOpened) {
+        log('Auto-open blocked by browser — tap the button above to open CareTalk360.');
+      } else {
+        log('CareTalk360 opened automatically in your browser.');
+      }
+    }
+  } catch (_) {
+    // Silent — don't spam the log during normal idle polling
+  }
+}
+
+// ── Manual phone lookup (fallback) ──
 async function lookupEngagement() {
   const input  = document.getElementById('phone-input');
   const btn    = document.getElementById('lookup-btn');
@@ -37,31 +107,17 @@ async function lookupEngagement() {
   btn.disabled = true;
   btn.textContent = 'Looking up…';
   result.style.display = 'none';
-  log(`Looking up phone: ${phone}`);
+  log(`Manual lookup: ${phone}`);
 
   try {
     const res  = await fetch(`${window.location.origin}/get-engagement?phone=${phone}`);
     const data = await res.json();
 
     if (data.ok) {
-      // Populate customer card
-      document.getElementById('cust-id').textContent    = data.customerId    || '—';
-      document.getElementById('cust-appt').textContent  = data.appointmentId || '—';
-      document.getElementById('cust-phone').textContent = data.phone         || '—';
-      document.getElementById('cust-state').textContent = data.stateId       || '—';
-      document.getElementById('cust-partner').textContent     = data.partnerName      || '—';
-      document.getElementById('cust-route').textContent       = data.recommendedRoute || '—';
-      document.getElementById('customer-card').style.display  = 'block';
-
-      result.innerHTML =
-        `✓ <a href="${data.url}" target="_blank" rel="noopener noreferrer"
-            style="color:inherit;font-weight:700;font-size:15px;">
-           🖥️ Open CareTalk360 ↗
-         </a>`;
-      result.className = 'result success';
-      result.style.display = 'block';
+      populateCard(data);
+      showScreenpop(data.url, false);
       setStatus('Ready ✓', 'success');
-      log(`CareTalk360 URL ready for ${data.customerId}`);
+      log(`CareTalk360 URL ready for ${data.customerId || phone}`);
     } else {
       result.className = 'result error';
       result.textContent = `✗ ${data.error || 'No data found. Has the flow run yet?'}`;
@@ -79,10 +135,14 @@ async function lookupEngagement() {
   btn.textContent = 'Look Up';
 }
 
-// Allow Enter key in phone field
+// ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
-  setStatus('Ready — enter caller phone to look up');
-  log('App loaded. Enter the caller\'s phone number to get the CareTalk360 link.');
+  setStatus('Monitoring for incoming transfers…', 'info');
+  log('App loaded. Listening for call transfers automatically.');
+
+  // Start polling
+  setInterval(pollLatest, POLL_MS);
+  pollLatest(); // check immediately on load
 
   document.getElementById('lookup-btn')
     .addEventListener('click', lookupEngagement);

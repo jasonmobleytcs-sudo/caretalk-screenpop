@@ -29,6 +29,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Entries expire after 4 hours.
 const engagementStore = new Map();
 const STORE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+let latestPhone = null; // tracks the most recently received call
 
 function normalizePhone(raw = '') {
   return String(raw).replace(/\D/g, '').slice(-10); // last 10 digits
@@ -59,8 +60,24 @@ app.post('/flow-data', (req, res) => {
     ts: Date.now(),
   });
 
+  latestPhone = phone;
   console.log(`flow-data stored for ${phone}:`, engagementStore.get(phone));
   res.json({ ok: true });
+});
+
+// ── GET /latest-engagement — panel polls this to auto-detect new calls ──
+// Returns the most recent engagement if it arrived within the last 5 minutes.
+app.get('/latest-engagement', (req, res) => {
+  pruneExpired();
+  if (!latestPhone) return res.json({ ok: false });
+  const data = engagementStore.get(latestPhone);
+  if (!data) return res.json({ ok: false });
+  if (Date.now() - data.ts > 5 * 60 * 1000) return res.json({ ok: false }); // older than 5 min
+
+  const url = `https://caretalk360.com/dashboard/patient-teleHealth` +
+              `?patientId=${encodeURIComponent(data.customerId)}` +
+              `&appointmentId=${encodeURIComponent(data.appointmentId)}`;
+  res.json({ ok: true, url, ...data });
 });
 
 // ── GET /get-engagement?phone=XXXXXXXXXX — panel looks up engagement by caller phone ──
