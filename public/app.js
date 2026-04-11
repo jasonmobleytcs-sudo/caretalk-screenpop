@@ -40,21 +40,51 @@ function populateCard(data) {
   document.getElementById('customer-card').style.display = 'block';
 }
 
-function showScreenpop(url, autoOpened) {
-  const result = document.getElementById('result');
-  if (autoOpened) {
-    result.innerHTML =
-      `✅ CareTalk360 opened automatically! &nbsp;` +
-      `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:inherit;font-weight:700;">Open again ↗</a>`;
-    result.className = 'result success';
-  } else {
-    // window.open was blocked — show a giant one-click button
-    result.innerHTML =
-      `<a href="${url}" target="_blank" rel="noopener noreferrer" id="screenpop-link">` +
-      `🖥️&nbsp; OPEN CARETALK360 ↗</a>`;
-    result.className = 'result screenpop';
+async function tryOpenUrl(url) {
+  // Strategy 1: Zoom SDK openUrl (if SDK is injected)
+  if (typeof zoomSdk !== 'undefined' && zoomSdk.openUrl) {
+    try { await zoomSdk.openUrl({ url }); return true; } catch (_) {}
   }
+  // Strategy 2: window.open
+  const win = window.open(url, '_blank');
+  if (win && !win.closed) return true;
+  // Strategy 3: clipboard copy
+  try {
+    await navigator.clipboard.writeText(url);
+    return 'clipboard';
+  } catch (_) {}
+  return false;
+}
+
+function showScreenpop(url) {
+  const result = document.getElementById('result');
+  result.innerHTML =
+    `<a href="${url}" target="_blank" rel="noopener noreferrer" id="screenpop-link">` +
+    `🖥️&nbsp; OPEN CARETALK360 ↗</a>`;
+  result.className = 'result screenpop';
   result.style.display = 'block';
+
+  // Attach click handler that tries every method
+  setTimeout(() => {
+    const link = document.getElementById('screenpop-link');
+    if (!link) return;
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const outcome = await tryOpenUrl(url);
+      if (outcome === true) {
+        result.innerHTML = `✅ CareTalk360 opened! &nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:inherit;font-weight:700;">Open again ↗</a>`;
+        result.className = 'result success';
+      } else if (outcome === 'clipboard') {
+        result.innerHTML = `📋 <strong>URL copied to clipboard.</strong> Paste it in your browser (Cmd+V / Ctrl+V).<br><small style="word-break:break-all;opacity:0.8;">${url}</small>`;
+        result.className = 'result success';
+        log('URL copied to clipboard — paste in browser.');
+      } else {
+        // Last resort: show URL to copy manually
+        result.innerHTML = `⚠️ Could not open automatically.<br><small>Copy this URL manually:</small><br><code style="word-break:break-all;font-size:11px;">${url}</code>`;
+        result.className = 'result error';
+      }
+    });
+  }, 50);
 }
 
 // ── Auto-poll for new calls ──
@@ -74,15 +104,16 @@ async function pollLatest() {
       populateCard(data);
 
       // Attempt to open in system browser automatically
-      const win = window.open(data.url, '_blank');
-      const autoOpened = win && !win.closed;
+      showScreenpop(data.url);
 
-      showScreenpop(data.url, autoOpened);
-
-      if (!autoOpened) {
-        log('Auto-open blocked by browser — tap the button above to open CareTalk360.');
-      } else {
+      // Also attempt auto-open immediately on detection
+      const outcome = await tryOpenUrl(data.url);
+      if (outcome === true) {
         log('CareTalk360 opened automatically in your browser.');
+      } else if (outcome === 'clipboard') {
+        log('URL copied to clipboard — paste in browser.');
+      } else {
+        log('Click the OPEN CARETALK360 button above.');
       }
     }
   } catch (_) {
@@ -115,7 +146,7 @@ async function lookupEngagement() {
 
     if (data.ok) {
       populateCard(data);
-      showScreenpop(data.url, false);
+      showScreenpop(data.url);
       setStatus('Ready ✓', 'success');
       log(`CareTalk360 URL ready for ${data.customerId || phone}`);
     } else {
