@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><title>CareTalk Screenpop Worker</title></head>
+<body>
+<script>
+  // Spawn a Web Worker that polls the server.
+  // Workers persist as long as this offscreen document is alive.
+  const worker = new Worker('poller.js');
+
+  worker.onmessage = ({ data }) => {
+    if (data.type === 'newCall') {
+      // Forward to background service worker which opens the tab
+      chrome.runtime.sendMessage({ type: 'newCall', url: data.url });
+    }
+  };
+
+  worker.onerror = (e) => console.error('[CareTalk] Poller error:', e.message);
+</script>
+</body>
+</html>

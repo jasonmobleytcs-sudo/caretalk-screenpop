@@ -97,6 +97,14 @@ app.get('/get-engagement', (req, res) => {
   res.json({ ok: true, url, ...data });
 });
 
+// ── Screenpop tab — served to Chrome browser, not Zoom webview ──
+// Relaxed CSP: this page needs window.open() to work in a real browser
+app.get('/screenpop-tab', (req, res) => {
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'");
+  res.sendFile(path.join(__dirname, 'public', 'screenpop-tab.html'));
+});
+
 // ── Cache-busting aliases ──
 ['app','v2','v3','v4','v5','v6','v7','v8','v9',
  'v10','v11','v12','v13','v14','v15','v16','v17','v18','v19','v20'].forEach(p =>
