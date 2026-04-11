@@ -1,36 +1,70 @@
-const OFFSCREEN_URL = chrome.runtime.getURL('offscreen.html');
+// CareTalk360 Screenpop — background service worker
+// Polls the server every 30 seconds via chrome.alarms.
+// When a new call is detected, opens CareTalk360 in a new Chrome tab.
 
-async function ensureOffscreen() {
-  // Check if offscreen doc is already running
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ['OFFSCREEN_DOCUMENT'],
-    documentUrls: [OFFSCREEN_URL]
-  }).catch(() => []);
+const SERVER = 'https://caretalk-screenpop.onrender.com';
 
-  if (contexts.length > 0) return; // already running
+// ── Helpers ──────────────────────────────────────────────────────────────
+async function getLastSeenTs() {
+  const r = await chrome.storage.session.get(['lastSeenTs']).catch(() => ({}));
+  return r.lastSeenTs || 0;
+}
+
+async function setLastSeenTs(ts) {
+  await chrome.storage.session.set({ lastSeenTs: ts }).catch(() => {});
+}
+
+async function getAgentEmail() {
+  const r = await chrome.storage.sync.get(['agentEmail']).catch(() => ({}));
+  return r.agentEmail || '';
+}
+
+// ── Main poll ─────────────────────────────────────────────────────────────
+async function poll() {
+  const lastSeenTs = await getLastSeenTs();
+  const agentEmail = await getAgentEmail();
+
+  // Use agent-specific endpoint if email is configured, otherwise latest
+  const endpoint = agentEmail
+    ? `${SERVER}/my-engagement?email=${encodeURIComponent(agentEmail)}`
+    : `${SERVER}/latest-engagement`;
 
   try {
-    await chrome.offscreen.createDocument({
-      url: OFFSCREEN_URL,
-      reasons: ['WORKERS'],
-      justification: 'Background Web Worker polls for incoming call transfers every 5 seconds'
-    });
-  } catch (e) {
-    console.error('[CareTalk] Failed to create offscreen doc:', e.message);
+    const res  = await fetch(endpoint, { cache: 'no-store' });
+    const data = await res.json();
+
+    if (data.ok && data.ts > lastSeenTs) {
+      await setLastSeenTs(data.ts);
+      chrome.tabs.create({ url: data.url, active: true });
+      console.log('[CareTalk] Opened CareTalk360 for', data.phone);
+    }
+  } catch (err) {
+    console.warn('[CareTalk] Poll failed:', err.message);
   }
 }
 
-// When the poller detects a new call, open CareTalk360 in a new active tab
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'newCall') {
-    chrome.tabs.create({ url: msg.url, active: true });
-  }
+// ── Alarm-based polling (reliable across SW restarts) ─────────────────────
+// Chrome 120+: minimum is 30 seconds (periodInMinutes: 0.5)
+// Chrome < 120: Chrome clamps to 1 minute automatically
+chrome.alarms.create('poll', { periodInMinutes: 0.5 });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'poll') poll();
 });
 
-// Start polling on install and browser startup
-chrome.runtime.onInstalled.addListener(() => ensureOffscreen());
-chrome.runtime.onStartup.addListener(() => ensureOffscreen());
+// ── On install / startup — set baseline so old calls don't trigger ─────────
+async function init() {
+  const existing = await getLastSeenTs();
+  if (!existing) {
+    // First run: ignore any calls already in the store
+    await setLastSeenTs(Date.now());
+    console.log('[CareTalk] Initialized — monitoring for new calls.');
+  }
+  poll(); // check right away
+}
 
-// Revive the offscreen doc every minute in case Chrome killed it
-chrome.alarms.create('revive', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener(() => ensureOffscreen());
+chrome.runtime.onInstalled.addListener(init);
+chrome.runtime.onStartup.addListener(init);
+
+// Also poll once whenever the SW is woken up by any event
+poll();

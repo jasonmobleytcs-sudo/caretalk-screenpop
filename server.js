@@ -1,14 +1,19 @@
 const express = require('express');
-const path = require('path');
-const app = express();
+const crypto  = require('crypto');
+const path    = require('path');
+const app     = express();
 
-app.use(express.json());
+// Capture raw body before JSON parsing (needed for webhook signature verification)
+app.use(express.json({
+  verify: (req, res, buf) => { req.rawBody = buf.toString(); }
+}));
 
-// Required OWASP security headers — MUST be before static middleware
+// ── Security + no-cache headers ───────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://appssdk.zoom.us; connect-src 'self' https://*.zoom.us; frame-ancestors 'self' https://*.zoom.us");
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self' https://appssdk.zoom.us; connect-src 'self' https://*.zoom.us; frame-ancestors 'self' https://*.zoom.us");
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -16,40 +21,58 @@ app.use((req, res, next) => {
   next();
 });
 
-// Log every request
+// ── Request logger ────────────────────────────────────────────────────────
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} | UA: ${req.headers['user-agent']?.substring(0, 80)}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── In-memory engagement store (keyed by normalized phone number) ──
-// Zoom CC flow POSTs here via HTTP Request widget after setting variables.
-// Entries expire after 4 hours.
+// ── In-memory stores ──────────────────────────────────────────────────────
+const STORE_TTL_MS  = 4 * 60 * 60 * 1000; // 4 hours
+const AGENT_TTL_MS  = 2 * 60 * 60 * 1000; // 2 hours
+
+// Phone → CRM data (populated by Zoom CC flow HTTP Request widget)
 const engagementStore = new Map();
-const STORE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
-let latestPhone = null; // tracks the most recently received call
+
+// AgentEmail/AgentId → phone (populated by Zoom CC webhook)
+const agentToPhone = new Map();
+
+// Most recently received call phone (fallback for non-agent-specific polling)
+let latestPhone = null;
+
+// Recent webhook payloads for debugging
+const webhookLog = [];
 
 function normalizePhone(raw = '') {
-  return String(raw).replace(/\D/g, '').slice(-10); // last 10 digits
+  return String(raw).replace(/\D/g, '').slice(-10);
+}
+
+function buildUrl(data) {
+  return `https://caretalk360.com/dashboard/patient-teleHealth` +
+         `?patientId=${encodeURIComponent(data.customerId || '')}` +
+         `&appointmentId=${encodeURIComponent(data.appointmentId || '')}`;
 }
 
 function pruneExpired() {
   const now = Date.now();
-  for (const [key, val] of engagementStore) {
-    if (now - val.ts > STORE_TTL_MS) engagementStore.delete(key);
+  for (const [k, v] of engagementStore) {
+    if (now - v.ts > STORE_TTL_MS) engagementStore.delete(k);
+  }
+  for (const [k, v] of agentToPhone) {
+    if (now - v.ts > AGENT_TTL_MS) agentToPhone.delete(k);
   }
 }
 
-// ── POST /flow-data — called by Zoom CC flow HTTP Request widget ──
-// Body: { phone, customerId, appointmentId, stateId, eligibilityId, partnerName, recommendedRoute }
+// ── POST /flow-data ───────────────────────────────────────────────────────
+// Called by Zoom CC flow HTTP Request widget before routing to queue.
 app.post('/flow-data', (req, res) => {
   pruneExpired();
   const phone = normalizePhone(req.body.phone);
   if (!phone) return res.status(400).json({ ok: false, error: 'phone required' });
 
-  engagementStore.set(phone, {
+  const entry = {
     customerId:       req.body.customerId       || '',
     appointmentId:    req.body.appointmentId    || '',
     stateId:          req.body.stateId          || '',
@@ -58,78 +81,161 @@ app.post('/flow-data', (req, res) => {
     recommendedRoute: req.body.recommendedRoute || '',
     phone,
     ts: Date.now(),
-  });
-
+  };
+  engagementStore.set(phone, entry);
   latestPhone = phone;
-  console.log(`flow-data stored for ${phone}:`, engagementStore.get(phone));
+  console.log(`[flow-data] stored for ${phone}`);
   res.json({ ok: true });
 });
 
-// ── GET /latest-engagement — panel polls this to auto-detect new calls ──
-// Returns the most recent engagement if it arrived within the last 5 minutes.
+// ── POST /webhook/zoom-cc ─────────────────────────────────────────────────
+// Zoom CC fires this when an agent accepts a call.
+// Stores agentEmail → phone mapping so each agent gets only their own screenpop.
+app.post('/webhook/zoom-cc', (req, res) => {
+  const body = req.body || {};
+
+  // Keep last 20 payloads for debugging
+  webhookLog.unshift({ ts: Date.now(), event: body.event, payload: body.payload });
+  if (webhookLog.length > 20) webhookLog.pop();
+
+  // ── Zoom URL validation challenge ──
+  if (body.event === 'endpoint.url_validation') {
+    const token = process.env.ZOOM_WEBHOOK_SECRET_TOKEN || '';
+    const hash  = crypto.createHmac('sha256', token)
+                        .update(body.payload?.plainToken || '')
+                        .digest('hex');
+    console.log('[webhook] URL validation challenge responded');
+    return res.json({ plainToken: body.payload?.plainToken, encryptedToken: hash });
+  }
+
+  // ── Signature verification ──
+  const secretToken = process.env.ZOOM_WEBHOOK_SECRET_TOKEN;
+  if (secretToken) {
+    const ts  = req.headers['x-zm-request-timestamp'] || '';
+    const sig = req.headers['x-zm-signature'] || '';
+    const expected = 'v0=' + crypto
+      .createHmac('sha256', secretToken)
+      .update(`v0:${ts}:${req.rawBody}`)
+      .digest('hex');
+    if (sig !== expected) {
+      console.warn('[webhook] Signature mismatch — rejected');
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+  }
+
+  const event   = body.event || '';
+  const payload = body.payload || {};
+  console.log(`[webhook] ${event}`, JSON.stringify(payload).substring(0, 300));
+
+  // ── Handle agent-accepted engagement events ──
+  // Zoom CC may use any of these event names depending on version/config
+  const AGENT_EVENTS = [
+    'contact_center.engagement_agent_accepted',
+    'contact_center.engagement_connected',
+    'contact_center.engagement_answered',
+    'contact_center.engagement_agent_connected',
+    'contact_center.engagement_assigned',
+    'contact_center.engagement_updated',   // fallback — check status inside
+  ];
+
+  if (AGENT_EVENTS.includes(event)) {
+    // Extract agent identifier — try multiple payload shapes
+    const agentEmail = (
+      payload.operator?.email        ||
+      payload.agent?.email           ||
+      payload.engagement?.operator?.email ||
+      ''
+    ).toLowerCase();
+
+    const agentId = (
+      payload.operator?.user_id   ||
+      payload.operator?.id        ||
+      payload.agent?.user_id      ||
+      payload.agent?.id           ||
+      payload.engagement?.operator?.user_id ||
+      ''
+    );
+
+    // Extract caller phone — try multiple payload shapes
+    const rawPhone = (
+      payload.consumer?.phone_number     ||
+      payload.engagement?.consumer?.phone_number ||
+      payload.engagement?.ani            ||
+      payload.ani                        ||
+      payload.caller_number              ||
+      ''
+    );
+    const phone = normalizePhone(rawPhone);
+
+    if (phone && (agentEmail || agentId)) {
+      const mapping = { phone, ts: Date.now() };
+      if (agentEmail) agentToPhone.set(agentEmail, mapping);
+      if (agentId)    agentToPhone.set(agentId, mapping);
+      console.log(`[webhook] Agent ${agentEmail || agentId} accepted call from ${phone}`);
+    } else {
+      console.warn('[webhook] Could not extract agent or phone. agentEmail:', agentEmail, 'agentId:', agentId, 'phone:', phone);
+    }
+  }
+
+  res.json({ ok: true });
+});
+
+// ── GET /my-engagement?email=XXX  (agent-specific) ────────────────────────
+app.get('/my-engagement', (req, res) => {
+  pruneExpired();
+  const key = (req.query.email || req.query.agentId || '').toLowerCase();
+  if (!key) return res.json({ ok: false, error: 'email or agentId required' });
+
+  const mapping = agentToPhone.get(key);
+  if (!mapping) return res.json({ ok: false, error: 'No active engagement for this agent' });
+
+  const data = engagementStore.get(mapping.phone);
+  if (!data)  return res.json({ ok: false, error: 'Engagement data not in store' });
+
+  res.json({ ok: true, url: buildUrl(data), ...data });
+});
+
+// ── GET /latest-engagement  (fallback — most recent call, all agents) ─────
 app.get('/latest-engagement', (req, res) => {
   pruneExpired();
   if (!latestPhone) return res.json({ ok: false });
   const data = engagementStore.get(latestPhone);
-  if (!data) return res.json({ ok: false });
-  if (Date.now() - data.ts > 5 * 60 * 1000) return res.json({ ok: false }); // older than 5 min
-
-  const url = `https://caretalk360.com/dashboard/patient-teleHealth` +
-              `?patientId=${encodeURIComponent(data.customerId)}` +
-              `&appointmentId=${encodeURIComponent(data.appointmentId)}`;
-  res.json({ ok: true, url, ...data });
+  if (!data || Date.now() - data.ts > 5 * 60 * 1000) return res.json({ ok: false });
+  res.json({ ok: true, url: buildUrl(data), ...data });
 });
 
-// ── GET /get-engagement?phone=XXXXXXXXXX — panel looks up engagement by caller phone ──
+// ── GET /get-engagement?phone=XXXXXXXXXX  (manual panel lookup) ───────────
 app.get('/get-engagement', (req, res) => {
   pruneExpired();
   const phone = normalizePhone(req.query.phone);
   const data  = engagementStore.get(phone);
-
-  if (!data) {
-    return res.json({ ok: false, error: 'No engagement found for that number' });
-  }
-
-  const url = `https://caretalk360.com/dashboard/patient-teleHealth` +
-              `?patientId=${encodeURIComponent(data.customerId)}` +
-              `&appointmentId=${encodeURIComponent(data.appointmentId)}`;
-
-  res.json({ ok: true, url, ...data });
+  if (!data) return res.json({ ok: false, error: 'No engagement found for that number' });
+  res.json({ ok: true, url: buildUrl(data), ...data });
 });
 
-// ── Screenpop tab — served to Chrome browser, not Zoom webview ──
-// Relaxed CSP: this page needs window.open() to work in a real browser
+// ── Screenpop tab (served to real Chrome, relaxed CSP) ────────────────────
 app.get('/screenpop-tab', (req, res) => {
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'");
   res.sendFile(path.join(__dirname, 'public', 'screenpop-tab.html'));
 });
 
-// ── Cache-busting aliases ──
+// ── Cache-busting aliases ─────────────────────────────────────────────────
 ['app','v2','v3','v4','v5','v6','v7','v8','v9',
  'v10','v11','v12','v13','v14','v15','v16','v17','v18','v19','v20'].forEach(p =>
   app.get(`/${p}`, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')))
 );
 
-// ── Debug: show store contents (non-sensitive, internal use) ──
-app.get('/debug/store', (req, res) => {
-  pruneExpired();
-  const entries = [];
-  for (const [phone, val] of engagementStore) {
-    entries.push({ phone, ...val, age_min: Math.round((Date.now() - val.ts) / 60000) });
-  }
-  res.json({ count: entries.length, entries });
-});
+// ── Debug endpoints ───────────────────────────────────────────────────────
+app.get('/debug/store',    (req, res) => { pruneExpired(); const e = []; for (const [phone, v] of engagementStore) e.push({ phone, ...v, age_min: Math.round((Date.now()-v.ts)/60000) }); res.json({ count: e.length, entries: e }); });
+app.get('/debug/agents',   (req, res) => { pruneExpired(); const a = []; for (const [key, v] of agentToPhone) a.push({ key, phone: v.phone, age_min: Math.round((Date.now()-v.ts)/60000) }); res.json({ count: a.length, agents: a }); });
+app.get('/debug/webhooks', (req, res) => res.json({ count: webhookLog.length, log: webhookLog }));
 
-// ── Ping ──
-app.get('/ping', (req, res) => {
-  console.log('PING! User-Agent:', req.headers['user-agent']);
-  res.json({ ok: true });
-});
+// ── Ping ──────────────────────────────────────────────────────────────────
+app.get('/ping', (req, res) => res.json({ ok: true }));
 
 app.get('/oauth/callback', (req, res) => {
-  const { code } = req.query;
-  console.log('OAuth code received:', code);
+  console.log('OAuth code:', req.query.code);
   res.send('Authorization successful! You can close this window.');
 });
 
