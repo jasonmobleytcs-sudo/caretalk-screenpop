@@ -81,9 +81,20 @@ app.get('/get-engagement', (req, res) => {
 });
 
 // ── Cache-busting aliases ──
-['app','v2','v3','v4','v5','v6','v7','v8','v9'].forEach(p =>
+['app','v2','v3','v4','v5','v6','v7','v8','v9',
+ 'v10','v11','v12','v13','v14','v15','v16','v17','v18','v19','v20'].forEach(p =>
   app.get(`/${p}`, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')))
 );
+
+// ── Debug: show store contents (non-sensitive, internal use) ──
+app.get('/debug/store', (req, res) => {
+  pruneExpired();
+  const entries = [];
+  for (const [phone, val] of engagementStore) {
+    entries.push({ phone, ...val, age_min: Math.round((Date.now() - val.ts) / 60000) });
+  }
+  res.json({ count: entries.length, entries });
+});
 
 // ── Ping ──
 app.get('/ping', (req, res) => {
