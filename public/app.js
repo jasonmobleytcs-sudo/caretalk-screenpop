@@ -3,6 +3,22 @@ const POLL_MS = 3000; // check for new calls every 3 seconds
 // Only trigger on calls that arrive AFTER this panel loaded
 let lastSeenTs = Date.now();
 
+// ── Zoom SDK init ──
+let sdkReady = false;
+async function initSdk() {
+  if (typeof zoomSdk === 'undefined') return;
+  try {
+    await Promise.race([
+      zoomSdk.config({ capabilities: ['openUrl'] }),
+      new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 4000))
+    ]);
+    sdkReady = true;
+    log('Zoom SDK ready — will auto-open browser on next call.');
+  } catch (e) {
+    log('Zoom SDK unavailable (' + e.message + ') — using clipboard fallback.');
+  }
+}
+
 // ── Helpers ──
 function log(msg) {
   const el = document.getElementById('log');
@@ -41,46 +57,63 @@ function populateCard(data) {
 }
 
 async function tryOpenUrl(url) {
-  // Strategy 1: Zoom SDK openUrl (if SDK is injected)
-  if (typeof zoomSdk !== 'undefined' && zoomSdk.openUrl) {
-    try { await zoomSdk.openUrl({ url }); return true; } catch (_) {}
+  // Strategy 1: Zoom Apps SDK openUrl (proper API for opening system browser)
+  if (sdkReady && typeof zoomSdk !== 'undefined' && zoomSdk.openUrl) {
+    try { await zoomSdk.openUrl({ url }); return 'sdk'; } catch (_) {}
   }
-  // Strategy 2: window.open
-  const win = window.open(url, '_blank');
-  if (win && !win.closed) return true;
-  // Strategy 3: clipboard copy
+  // Strategy 2: window.open _system (some Electron webviews honor this)
+  try { const w = window.open(url, '_system'); if (w) return 'window'; } catch (_) {}
+  // Strategy 3: window.open _blank
+  try { const w = window.open(url, '_blank'); if (w && !w.closed) return 'window'; } catch (_) {}
+  // Strategy 4: navigator.clipboard (modern API)
+  try { await navigator.clipboard.writeText(url); return 'clipboard'; } catch (_) {}
+  // Strategy 5: execCommand copy (works in most Electron webviews)
   try {
-    await navigator.clipboard.writeText(url);
-    return 'clipboard';
+    const ta = document.createElement('textarea');
+    ta.value = url; ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) return 'clipboard';
   } catch (_) {}
   return false;
 }
 
 function showScreenpop(url) {
   const result = document.getElementById('result');
+  // Show pulsing button + a selectable URL input as fallback
   result.innerHTML =
     `<a href="${url}" target="_blank" rel="noopener noreferrer" id="screenpop-link">` +
-    `🖥️&nbsp; OPEN CARETALK360 ↗</a>`;
+    `🖥️&nbsp; OPEN CARETALK360 ↗</a>` +
+    `<input id="url-copy-input" type="text" value="${url}" readonly ` +
+    `style="margin-top:8px;width:100%;font-size:10px;padding:4px;border:1px solid #ccc;` +
+    `border-radius:4px;background:#f8f8f8;cursor:pointer;" title="Click to select URL" />`;
   result.className = 'result screenpop';
   result.style.display = 'block';
 
-  // Attach click handler that tries every method
+  // Auto-select URL input on click for easy Cmd+C
   setTimeout(() => {
+    const inp = document.getElementById('url-copy-input');
+    if (inp) inp.addEventListener('click', () => inp.select());
+
     const link = document.getElementById('screenpop-link');
     if (!link) return;
     link.addEventListener('click', async (e) => {
       e.preventDefault();
       const outcome = await tryOpenUrl(url);
-      if (outcome === true) {
-        result.innerHTML = `✅ CareTalk360 opened! &nbsp;<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:inherit;font-weight:700;">Open again ↗</a>`;
+      if (outcome === 'sdk' || outcome === 'window') {
+        result.innerHTML = `✅ CareTalk360 opened in your browser!`;
         result.className = 'result success';
+        log('CareTalk360 opened in system browser.');
       } else if (outcome === 'clipboard') {
-        result.innerHTML = `📋 <strong>URL copied to clipboard.</strong> Paste it in your browser (Cmd+V / Ctrl+V).<br><small style="word-break:break-all;opacity:0.8;">${url}</small>`;
+        result.innerHTML = `📋 <strong>URL copied!</strong> Paste in your browser&nbsp;(Cmd+V / Ctrl+V).<br>` +
+          `<small style="word-break:break-all;opacity:0.75;">${url}</small>`;
         result.className = 'result success';
         log('URL copied to clipboard — paste in browser.');
       } else {
-        // Last resort: show URL to copy manually
-        result.innerHTML = `⚠️ Could not open automatically.<br><small>Copy this URL manually:</small><br><code style="word-break:break-all;font-size:11px;">${url}</code>`;
+        result.innerHTML = `⚠️ Click the URL below to select it, then copy &amp; paste in your browser:<br>` +
+          `<input type="text" value="${url}" readonly onclick="this.select()" ` +
+          `style="width:100%;font-size:10px;padding:4px;margin-top:6px;border:1px solid #ccc;border-radius:4px;" />`;
         result.className = 'result error';
       }
     });
@@ -108,7 +141,7 @@ async function pollLatest() {
 
       // Also attempt auto-open immediately on detection
       const outcome = await tryOpenUrl(data.url);
-      if (outcome === true) {
+      if (outcome === 'sdk' || outcome === 'window') {
         log('CareTalk360 opened automatically in your browser.');
       } else if (outcome === 'clipboard') {
         log('URL copied to clipboard — paste in browser.');
@@ -170,6 +203,7 @@ async function lookupEngagement() {
 document.addEventListener('DOMContentLoaded', () => {
   setStatus('Monitoring for incoming transfers…', 'info');
   log('App loaded. Listening for call transfers automatically.');
+  initSdk(); // attempt Zoom SDK init (needed for openUrl)
 
   // Start polling
   setInterval(pollLatest, POLL_MS);
