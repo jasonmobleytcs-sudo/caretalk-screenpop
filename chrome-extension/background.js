@@ -30,8 +30,14 @@ async function poll() {
     : `${SERVER}/latest-engagement`;
 
   try {
-    const res  = await fetch(endpoint, { cache: 'no-store' });
-    const data = await res.json();
+    let res  = await fetch(endpoint, { cache: 'no-store' });
+    let data = await res.json();
+
+    // If agent-specific lookup failed, fall back to latest engagement
+    if (!data.ok && agentEmail) {
+      const fallback = await fetch(`${SERVER}/latest-engagement`, { cache: 'no-store' });
+      data = await fallback.json();
+    }
 
     if (data.ok && data.ts > lastSeenTs) {
       await setLastSeenTs(data.ts);

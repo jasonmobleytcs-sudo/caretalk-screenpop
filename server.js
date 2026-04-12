@@ -3,6 +3,44 @@ const crypto  = require('crypto');
 const path    = require('path');
 const app     = express();
 
+// ── Zoom S2S OAuth — auto-lookup agent email from userId ──────────────────
+let _zoomToken = null;
+let _zoomTokenExpiry = 0;
+
+async function getZoomToken() {
+  if (_zoomToken && Date.now() < _zoomTokenExpiry - 60000) return _zoomToken;
+  const acct   = process.env.ZOOM_S2S_ACCOUNT_ID;
+  const cid    = process.env.ZOOM_S2S_CLIENT_ID;
+  const csecret= process.env.ZOOM_S2S_CLIENT_SECRET;
+  if (!acct || !cid || !csecret) return null;
+  try {
+    const creds = Buffer.from(`${cid}:${csecret}`).toString('base64');
+    const r = await fetch(
+      `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${acct}`,
+      { method: 'POST', headers: { Authorization: `Basic ${creds}` } }
+    );
+    const d = await r.json();
+    if (d.access_token) {
+      _zoomToken = d.access_token;
+      _zoomTokenExpiry = Date.now() + d.expires_in * 1000;
+      return _zoomToken;
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function lookupAgentEmail(userId) {
+  const token = await getZoomToken();
+  if (!token) return null;
+  try {
+    const r = await fetch(`https://api.zoom.us/v2/users/${userId}`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return (d.email || '').toLowerCase() || null;
+  } catch (_) { return null; }
+}
+
 // Capture raw body before JSON parsing (needed for webhook signature verification)
 app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf.toString(); }
@@ -182,6 +220,17 @@ app.post('/webhook/zoom-cc', (req, res) => {
       if (agentId)    agentToPhone.set(agentId, mapping);
       if (agentEmail) agentToPhone.set(agentEmail, mapping);
       console.log(`[webhook] Agent ${agentId || agentEmail} (${obj.user_display_name || ''}) answered call from ${phone}`);
+
+      // Async: look up agent's email from Zoom API so email-based polls work
+      if (agentId && !agentEmail) {
+        lookupAgentEmail(agentId).then(email => {
+          if (email) {
+            agentToPhone.set(email, mapping);
+            emailToUserId.set(email, agentId);
+            console.log(`[webhook] Resolved ${agentId} → ${email}`);
+          }
+        }).catch(() => {});
+      }
     } else {
       console.warn('[webhook] Could not extract agent or phone. agentId:', agentId, 'phone:', phone, 'obj:', JSON.stringify(obj).substring(0, 200));
     }
