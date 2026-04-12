@@ -1,6 +1,6 @@
 // CareTalk360 Screenpop — background service worker
-// Polls the server every 30 seconds via chrome.alarms.
-// When a new call is detected, opens CareTalk360 in a new Chrome tab.
+// Uses long-polling so the tab opens within ~2 seconds of the agent answering.
+// Falls back to 30-second alarm polling as a safety net.
 
 const SERVER = 'https://caretalk-screenpop.onrender.com';
 
@@ -19,12 +19,51 @@ async function getAgentEmail() {
   return r.agentEmail || '';
 }
 
-// ── Main poll ─────────────────────────────────────────────────────────────
+// ── Open tab when a new engagement arrives ────────────────────────────────
+async function handleData(data) {
+  const lastSeenTs = await getLastSeenTs();
+  if (data.ok && data.ts > lastSeenTs) {
+    await setLastSeenTs(data.ts);
+    chrome.tabs.create({ url: data.url, active: true });
+    console.log('[CareTalk] Opened CareTalk360 for', data.phone);
+  }
+}
+
+// ── Long-poll: holds connection until server pushes a new call (≤25s) ─────
+// The in-flight fetch keeps the service worker alive, and we restart
+// immediately on completion — giving near-instant screenpop.
+async function longPoll() {
+  const agentEmail = await getAgentEmail();
+  if (!agentEmail) {
+    // No email set — retry in 10s
+    setTimeout(longPoll, 10000);
+    return;
+  }
+
+  const lastSeenTs = await getLastSeenTs();
+
+  try {
+    const res  = await fetch(
+      `${SERVER}/wait-for-engagement?email=${encodeURIComponent(agentEmail)}&since=${lastSeenTs}`,
+      { cache: 'no-store' }
+    );
+    const data = await res.json();
+    await handleData(data);
+  } catch (err) {
+    console.warn('[CareTalk] Long-poll error:', err.message);
+    // On network error wait 5s before retrying
+    await new Promise(r => setTimeout(r, 5000));
+  }
+
+  // Always restart immediately — this loop keeps the SW alive
+  longPoll();
+}
+
+// ── Alarm-based fallback poll (every 30s) ─────────────────────────────────
 async function poll() {
   const lastSeenTs = await getLastSeenTs();
   const agentEmail = await getAgentEmail();
 
-  // Use agent-specific endpoint if email is configured, otherwise latest
   const endpoint = agentEmail
     ? `${SERVER}/my-engagement?email=${encodeURIComponent(agentEmail)}`
     : `${SERVER}/latest-engagement`;
@@ -39,38 +78,33 @@ async function poll() {
       data = await fallback.json();
     }
 
-    if (data.ok && data.ts > lastSeenTs) {
-      await setLastSeenTs(data.ts);
-      chrome.tabs.create({ url: data.url, active: true });
-      console.log('[CareTalk] Opened CareTalk360 for', data.phone);
-    }
+    await handleData(data);
   } catch (err) {
     console.warn('[CareTalk] Poll failed:', err.message);
   }
 }
 
 // ── Alarm-based polling (reliable across SW restarts) ─────────────────────
-// Chrome 120+: minimum is 30 seconds (periodInMinutes: 0.5)
-// Chrome < 120: Chrome clamps to 1 minute automatically
 chrome.alarms.create('poll', { periodInMinutes: 0.5 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'poll') poll();
 });
 
-// ── On install / startup — set baseline so old calls don't trigger ─────────
+// ── On install / startup ──────────────────────────────────────────────────
 async function init() {
   const existing = await getLastSeenTs();
   if (!existing) {
-    // First run: ignore any calls already in the store
     await setLastSeenTs(Date.now());
     console.log('[CareTalk] Initialized — monitoring for new calls.');
   }
-  poll(); // check right away
+  poll();        // immediate snapshot check
+  longPoll();    // start persistent long-poll loop
 }
 
 chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(init);
 
-// Also poll once whenever the SW is woken up by any event
+// Also start on any SW wake-up
 poll();
+longPoll();

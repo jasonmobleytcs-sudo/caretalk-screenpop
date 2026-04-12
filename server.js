@@ -83,6 +83,23 @@ const emailToUserId = new Map();
 // Most recently received call phone (fallback for non-agent-specific polling)
 let latestPhone = null;
 
+// Long-poll waiting clients: key → { res, timer, since }
+const waitingClients = new Map();
+
+function notifyWaitingClients(keys, phone) {
+  const data = engagementStore.get(phone);
+  if (!data) return;
+  for (const key of keys) {
+    if (!key) continue;
+    const client = waitingClients.get(key);
+    if (client && data.ts > client.since) {
+      clearTimeout(client.timer);
+      client.res.json({ ok: true, url: buildUrl(data), ...data });
+      waitingClients.delete(key);
+    }
+  }
+}
+
 // Recent webhook payloads for debugging
 const webhookLog = [];
 
@@ -224,13 +241,18 @@ app.post('/webhook/zoom-cc', (req, res) => {
       latestPhone = phone; // only set here so /latest-engagement fires on answer, not on flow entry
       console.log(`[webhook] Agent ${agentId || agentEmail} (${obj.user_display_name || ''}) answered call from ${phone}`);
 
-      // Async: look up agent's email from Zoom API so email-based polls work
+      // Notify any long-polling clients waiting on userId or email right away
+      notifyWaitingClients([agentId, agentEmail], phone);
+
+      // Async: look up agent's email from Zoom API so email-based polls also work
       if (agentId && !agentEmail) {
         lookupAgentEmail(agentId).then(email => {
           if (email) {
             agentToPhone.set(email, mapping);
             emailToUserId.set(email, agentId);
             console.log(`[webhook] Resolved ${agentId} → ${email}`);
+            // Notify clients waiting on email key
+            notifyWaitingClients([email], phone);
           }
         }).catch(() => {});
       }
@@ -273,6 +295,51 @@ app.get('/my-engagement', (req, res) => {
   if (!data)  return res.json({ ok: false, error: 'Engagement data not in store' });
 
   res.json({ ok: true, url: buildUrl(data), ...data });
+});
+
+// ── GET /wait-for-engagement  (long-poll — returns instantly when agent answers) ──
+app.get('/wait-for-engagement', (req, res) => {
+  pruneExpired();
+  const email  = (req.query.email  || '').toLowerCase();
+  const userId = (req.query.userId || '').trim();
+  const since  = parseInt(req.query.since) || 0;
+
+  // Resolve key: prefer explicit userId, then email→userId map, then email itself
+  const key = userId || (email && emailToUserId.get(email)) || email;
+  if (!key) return res.json({ ok: false, error: 'email required' });
+
+  // Check if data already available
+  const mapping = agentToPhone.get(key);
+  if (mapping) {
+    const data = engagementStore.get(mapping.phone);
+    if (data && data.ts > since) {
+      return res.json({ ok: true, url: buildUrl(data), ...data });
+    }
+  }
+
+  // Also check latestPhone for fallback (no-email-configured agents)
+  if (!email) {
+    const data = latestPhone && engagementStore.get(latestPhone);
+    if (data && data.ts > since) return res.json({ ok: true, url: buildUrl(data), ...data });
+  }
+
+  // Hold the connection — resolve when webhook fires (max 25s then return empty)
+  res.setHeader('Content-Type', 'application/json');
+  const timer = setTimeout(() => {
+    waitingClients.delete(key);
+    if (email !== key) waitingClients.delete(email);
+    res.json({ ok: false });
+  }, 25000);
+
+  const entry = { res, timer, since };
+  waitingClients.set(key, entry);
+  if (email && email !== key) waitingClients.set(email, entry);
+
+  req.on('close', () => {
+    clearTimeout(timer);
+    waitingClients.delete(key);
+    if (email !== key) waitingClients.delete(email);
+  });
 });
 
 // ── GET /latest-engagement  (fallback — most recent call, all agents) ─────
