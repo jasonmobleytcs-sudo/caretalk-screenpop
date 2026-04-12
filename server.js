@@ -124,7 +124,9 @@ app.post('/flow-data', (req, res) => {
     ts: Date.now(),
   };
   engagementStore.set(phone, entry);
-  latestPhone = phone;
+  // NOTE: latestPhone is intentionally NOT set here.
+  // It is set in the webhook handler when an agent actually answers,
+  // so /latest-engagement only fires after answer — not when the call enters the flow.
   console.log(`[flow-data] stored for ${phone}`);
   res.json({ ok: true });
 });
@@ -219,6 +221,7 @@ app.post('/webhook/zoom-cc', (req, res) => {
       const mapping = { phone, ts: Date.now() };
       if (agentId)    agentToPhone.set(agentId, mapping);
       if (agentEmail) agentToPhone.set(agentEmail, mapping);
+      latestPhone = phone; // only set here so /latest-engagement fires on answer, not on flow entry
       console.log(`[webhook] Agent ${agentId || agentEmail} (${obj.user_display_name || ''}) answered call from ${phone}`);
 
       // Async: look up agent's email from Zoom API so email-based polls work
