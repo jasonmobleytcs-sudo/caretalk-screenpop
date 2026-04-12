@@ -1,82 +1,121 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    width: 260px;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    font-size: 13px;
-    background: #fff;
-    color: #1a1a2e;
-  }
-  .header {
-    background: #2372eb;
-    color: white;
-    padding: 12px 16px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-weight: 600;
-    font-size: 14px;
-  }
-  .dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: #7dff9e;
-    display: inline-block;
-    animation: pulse 2s ease-in-out infinite;
-    flex-shrink: 0;
-  }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-  .body { padding: 14px 16px; }
-  p { color: #555; line-height: 1.5; margin-bottom: 12px; }
-  label { font-size: 11px; font-weight: 600; color: #888; display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.3px; }
-  input[type=email] {
-    width: 100%;
-    padding: 8px 10px;
-    border: 1.5px solid #d0e1fd;
-    border-radius: 6px;
-    font-size: 12px;
-    outline: none;
-    margin-bottom: 8px;
-  }
-  input[type=email]:focus { border-color: #2372eb; }
-  button {
-    width: 100%;
-    padding: 8px;
-    background: #2372eb;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  button:hover { background: #1a5ecc; }
-  #saved-msg { font-size: 11px; color: #1a7a3a; margin-top: 6px; min-height: 16px; }
-  .divider { border: none; border-top: 1px solid #eee; margin: 12px 0; }
-  .note { font-size: 11px; color: #aaa; line-height: 1.5; }
-</style>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f1923;
+      color: #e8eaed;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      background: #1a2634;
+      border-bottom: 1px solid #2a3a4a;
+    }
+    .header img { width: 36px; height: 36px; border-radius: 8px; }
+    .header h1 { font-size: 14px; font-weight: 600; color: #fff; }
+    .header p  { font-size: 11px; color: #7a9bb5; margin-top: 2px; }
+
+    .body { padding: 18px 16px; }
+
+    /* ── Signed-out ── */
+    #signed-out { display: none; }
+    #signed-out label {
+      display: block; font-size: 12px; color: #7a9bb5;
+      font-weight: 500; margin-bottom: 6px;
+    }
+    #email-input {
+      width: 100%; padding: 9px 12px;
+      background: #1a2634; border: 1px solid #2a3a4a;
+      border-radius: 8px; color: #e8eaed; font-size: 13px; outline: none;
+      transition: border-color .15s;
+    }
+    #email-input:focus { border-color: #2f80ed; }
+    #btn-signin {
+      margin-top: 10px; width: 100%; padding: 10px;
+      background: #2f80ed; border: none; border-radius: 8px;
+      color: #fff; font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: background .15s;
+    }
+    #btn-signin:hover { background: #1a6fd4; }
+    #signin-error {
+      margin-top: 7px; font-size: 11px; color: #e05c5c;
+      text-align: center; min-height: 16px;
+    }
+
+    /* ── Signed-in ── */
+    #signed-in { display: none; }
+    .agent-card {
+      background: #1a2634; border: 1px solid #2a3a4a;
+      border-radius: 10px; padding: 14px;
+    }
+    .status-row {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #27ae60; box-shadow: 0 0 6px #27ae60;
+      flex-shrink: 0;
+      animation: glow 2s ease-in-out infinite;
+    }
+    @keyframes glow { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .status-label { font-size: 11px; color: #7a9bb5; font-weight: 500; letter-spacing: .4px; }
+    #agent-email-display {
+      font-size: 13px; color: #fff; font-weight: 500;
+      word-break: break-all; margin-bottom: 14px;
+    }
+    #btn-signout {
+      width: 100%; padding: 9px; background: transparent;
+      border: 1px solid #3a4a5a; border-radius: 8px;
+      color: #7a9bb5; font-size: 12px; font-weight: 500;
+      cursor: pointer; transition: all .15s;
+    }
+    #btn-signout:hover { background: #2a1a1a; border-color: #e05c5c; color: #e05c5c; }
+
+    .footer {
+      padding: 9px 16px; border-top: 1px solid #1a2634;
+      font-size: 10px; color: #3a5a7a; text-align: center;
+    }
+  </style>
 </head>
 <body>
   <div class="header">
-    <span class="dot"></span>
-    CareTalk Screenpop Active
+    <img src="icon48.png" alt="CareTalk">
+    <div>
+      <h1>CareTalk360 Screenpop</h1>
+      <p>Zoom Contact Center</p>
+    </div>
   </div>
+
   <div class="body">
-    <p>CareTalk360 opens automatically when a call transfers to your queue.</p>
+    <!-- Signed-out -->
+    <div id="signed-out">
+      <label for="email-input">Sign in with your Zoom agent email</label>
+      <input id="email-input" type="email" placeholder="agent@company.com" autocomplete="email">
+      <button id="btn-signin">Sign In</button>
+      <div id="signin-error"></div>
+    </div>
 
-    <hr class="divider">
-
-    <label>Your Zoom Email (optional)</label>
-    <input type="email" id="agent-email" placeholder="you@company.com" />
-    <button id="save-btn">Save Email</button>
-    <div id="saved-msg"></div>
-
-    <hr class="divider">
-    <p class="note">Enter your Zoom email to receive only <em>your</em> calls. Leave blank to receive all queue calls.</p>
+    <!-- Signed-in -->
+    <div id="signed-in">
+      <div class="agent-card">
+        <div class="status-row">
+          <div class="dot"></div>
+          <span class="status-label">MONITORING CALLS</span>
+        </div>
+        <div id="agent-email-display"></div>
+        <button id="btn-signout">Sign Out</button>
+      </div>
+    </div>
   </div>
+
+  <div class="footer">Screenpop fires only when YOU answer a transferred call</div>
   <script src="popup.js"></script>
 </body>
 </html>

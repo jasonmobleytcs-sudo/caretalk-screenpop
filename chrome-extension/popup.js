@@ -1,32 +1,57 @@
-document.addEventListener('DOMContentLoaded', () => {
-  const input = document.getElementById('agent-email');
-  const btn   = document.getElementById('save-btn');
-  const msg   = document.getElementById('saved-msg');
+// CareTalk360 Screenpop — popup.js
 
-  // Load saved email using local storage (works for unpacked extensions)
-  chrome.storage.local.get(['agentEmail'], (r) => {
-    if (r.agentEmail) input.value = r.agentEmail;
+const emailInput   = document.getElementById('email-input');
+const btnSignin    = document.getElementById('btn-signin');
+const signinError  = document.getElementById('signin-error');
+const signedOut    = document.getElementById('signed-out');
+const signedIn     = document.getElementById('signed-in');
+const emailDisplay = document.getElementById('agent-email-display');
+const btnSignout   = document.getElementById('btn-signout');
+
+// ── Render correct view based on stored email ─────────────────────────────
+function render(email) {
+  if (email) {
+    signedOut.style.display  = 'none';
+    signedIn.style.display   = 'block';
+    emailDisplay.textContent = email;
+  } else {
+    signedOut.style.display  = 'block';
+    signedIn.style.display   = 'none';
+    emailInput.value         = '';
+    signinError.textContent  = '';
+  }
+}
+
+// Load saved state on open
+chrome.storage.local.get(['agentEmail'], ({ agentEmail }) => {
+  render(agentEmail || '');
+});
+
+// ── Sign In ───────────────────────────────────────────────────────────────
+btnSignin.addEventListener('click', () => {
+  const email = emailInput.value.trim().toLowerCase();
+  if (!email || !email.includes('@')) {
+    signinError.textContent = 'Please enter a valid email address.';
+    return;
+  }
+  signinError.textContent = '';
+  chrome.storage.local.set({ agentEmail: email }, () => {
+    if (chrome.runtime.lastError) {
+      signinError.textContent = 'Error saving: ' + chrome.runtime.lastError.message;
+      return;
+    }
+    render(email);
   });
+});
 
-  btn.addEventListener('click', () => {
-    const email = input.value.trim().toLowerCase();
+// Allow pressing Enter in the email field
+emailInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') btnSignin.click();
+});
 
-    // Immediate visual feedback — don't wait for storage
-    btn.textContent = '✅ Saved!';
-    btn.style.background = '#1a7a3a';
-    msg.textContent = email
-      ? `Polling for: ${email}`
-      : 'Monitoring all queue calls';
-
-    chrome.storage.local.set({ agentEmail: email }, () => {
-      if (chrome.runtime.lastError) {
-        msg.textContent = '⚠️ Save failed: ' + chrome.runtime.lastError.message;
-      }
-      // Reset button after 2 seconds
-      setTimeout(() => {
-        btn.textContent = 'Save Email';
-        btn.style.background = '';
-      }, 2000);
-    });
+// ── Sign Out ──────────────────────────────────────────────────────────────
+btnSignout.addEventListener('click', () => {
+  chrome.storage.local.remove(['agentEmail', 'lastSeenTs'], () => {
+    render('');
   });
 });

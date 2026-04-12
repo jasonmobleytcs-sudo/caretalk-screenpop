@@ -35,10 +35,11 @@ async function handleData(data) {
 async function longPoll() {
   const agentEmail = await getAgentEmail();
   if (!agentEmail) {
-    // No email set — retry in 10s
+    // Not signed in — check again in 10s in case they sign in
     setTimeout(longPoll, 10000);
     return;
   }
+
 
   const lastSeenTs = await getLastSeenTs();
 
@@ -59,25 +60,17 @@ async function longPoll() {
   longPoll();
 }
 
-// ── Alarm-based fallback poll (every 30s) ─────────────────────────────────
+// ── Alarm-based fallback poll (every 30s safety net) ─────────────────────
 async function poll() {
-  const lastSeenTs = await getLastSeenTs();
   const agentEmail = await getAgentEmail();
-
-  const endpoint = agentEmail
-    ? `${SERVER}/my-engagement?email=${encodeURIComponent(agentEmail)}`
-    : `${SERVER}/latest-engagement`;
+  if (!agentEmail) return; // no email = not signed in, do nothing
 
   try {
-    let res  = await fetch(endpoint, { cache: 'no-store' });
-    let data = await res.json();
-
-    // If agent-specific lookup failed, fall back to latest engagement
-    if (!data.ok && agentEmail) {
-      const fallback = await fetch(`${SERVER}/latest-engagement`, { cache: 'no-store' });
-      data = await fallback.json();
-    }
-
+    const res  = await fetch(
+      `${SERVER}/my-engagement?email=${encodeURIComponent(agentEmail)}`,
+      { cache: 'no-store' }
+    );
+    const data = await res.json();
     await handleData(data);
   } catch (err) {
     console.warn('[CareTalk] Poll failed:', err.message);
