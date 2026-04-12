@@ -6,16 +6,16 @@ const SERVER = 'https://caretalk-screenpop.onrender.com';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 async function getLastSeenTs() {
-  const r = await chrome.storage.session.get(['lastSeenTs']).catch(() => ({}));
+  const r = await chrome.storage.local.get(['lastSeenTs']).catch(() => ({}));
   return r.lastSeenTs || 0;
 }
 
 async function setLastSeenTs(ts) {
-  await chrome.storage.session.set({ lastSeenTs: ts }).catch(() => {});
+  await chrome.storage.local.set({ lastSeenTs: ts }).catch(() => {});
 }
 
 async function getAgentEmail() {
-  const r = await chrome.storage.sync.get(['agentEmail']).catch(() => ({}));
+  const r = await chrome.storage.local.get(['agentEmail']).catch(() => ({}));
   return r.agentEmail || '';
 }
 
