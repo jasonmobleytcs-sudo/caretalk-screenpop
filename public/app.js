@@ -19,12 +19,22 @@ async function initSdk() {
     // Try to get agent identity automatically
     try {
       const ctx = await zoomSdk.getUserContext();
-      const email = (ctx.email || '').toLowerCase();
+      const email  = (ctx.email || '').toLowerCase();
+      const userId = ctx.id || ctx.userId || '';
       if (email && !agentEmail) {
         agentEmail = email;
         localStorage.setItem('ct_agent_email', email);
         log('Agent identified via SDK: ' + email);
         renderEmailUI();
+      }
+      // Register email → userId mapping on the server so webhook lookups work
+      if (email && userId) {
+        fetch(`${window.location.origin}/register-agent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, userId })
+        }).catch(() => {});
+        log('Registered agent: ' + email + ' / ' + userId);
       }
     } catch (_) {}
   } catch (e) {

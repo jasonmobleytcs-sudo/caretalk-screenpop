@@ -39,6 +39,9 @@ const engagementStore = new Map();
 // AgentEmail/AgentId → phone (populated by Zoom CC webhook)
 const agentToPhone = new Map();
 
+// Email → userId mapping (populated by panel on load via /register-agent)
+const emailToUserId = new Map();
+
 // Most recently received call phone (fallback for non-agent-specific polling)
 let latestPhone = null;
 
@@ -128,63 +131,88 @@ app.post('/webhook/zoom-cc', (req, res) => {
   console.log(`[webhook] ${event}`, JSON.stringify(payload).substring(0, 300));
 
   // ── Handle agent-accepted engagement events ──
-  // Zoom CC may use any of these event names depending on version/config
   const AGENT_EVENTS = [
+    'contact_center.engagement_user_answered',   // confirmed actual event name
     'contact_center.engagement_agent_accepted',
     'contact_center.engagement_connected',
     'contact_center.engagement_answered',
     'contact_center.engagement_agent_connected',
     'contact_center.engagement_assigned',
-    'contact_center.engagement_updated',   // fallback — check status inside
+    'contact_center.engagement_updated',
   ];
 
   if (AGENT_EVENTS.includes(event)) {
-    // Extract agent identifier — try multiple payload shapes
-    const agentEmail = (
-      payload.operator?.email        ||
-      payload.agent?.email           ||
-      payload.engagement?.operator?.email ||
-      ''
-    ).toLowerCase();
+    // Zoom CC sends data under payload.object for engagement_user_answered
+    const obj = payload.object || {};
 
+    // Extract agent identifier — try object shape first, then legacy shapes
     const agentId = (
-      payload.operator?.user_id   ||
-      payload.operator?.id        ||
-      payload.agent?.user_id      ||
-      payload.agent?.id           ||
+      obj.user_id                          ||
+      payload.operator?.user_id            ||
+      payload.operator?.id                 ||
+      payload.agent?.user_id               ||
+      payload.agent?.id                    ||
       payload.engagement?.operator?.user_id ||
       ''
     );
 
-    // Extract caller phone — try multiple payload shapes
+    const agentEmail = (
+      obj.user_email                       ||
+      payload.operator?.email              ||
+      payload.agent?.email                 ||
+      payload.engagement?.operator?.email  ||
+      ''
+    ).toLowerCase();
+
+    // Extract caller phone — object shape first, then legacy
     const rawPhone = (
-      payload.consumer?.phone_number     ||
+      obj.consumer_number                        ||
+      obj.ani                                    ||
+      payload.consumer?.phone_number             ||
       payload.engagement?.consumer?.phone_number ||
-      payload.engagement?.ani            ||
-      payload.ani                        ||
-      payload.caller_number              ||
+      payload.engagement?.ani                    ||
+      payload.ani                                ||
+      payload.caller_number                      ||
       ''
     );
     const phone = normalizePhone(rawPhone);
 
-    if (phone && (agentEmail || agentId)) {
+    if (phone && (agentId || agentEmail)) {
       const mapping = { phone, ts: Date.now() };
-      if (agentEmail) agentToPhone.set(agentEmail, mapping);
       if (agentId)    agentToPhone.set(agentId, mapping);
-      console.log(`[webhook] Agent ${agentEmail || agentId} accepted call from ${phone}`);
+      if (agentEmail) agentToPhone.set(agentEmail, mapping);
+      console.log(`[webhook] Agent ${agentId || agentEmail} (${obj.user_display_name || ''}) answered call from ${phone}`);
     } else {
-      console.warn('[webhook] Could not extract agent or phone. agentEmail:', agentEmail, 'agentId:', agentId, 'phone:', phone);
+      console.warn('[webhook] Could not extract agent or phone. agentId:', agentId, 'phone:', phone, 'obj:', JSON.stringify(obj).substring(0, 200));
     }
   }
 
   res.json({ ok: true });
 });
 
+// ── POST /register-agent  (panel calls this on load to map email → userId) ──
+app.post('/register-agent', (req, res) => {
+  const email  = (req.body.email  || '').toLowerCase().trim();
+  const userId = (req.body.userId || '').trim();
+  if (email && userId) {
+    emailToUserId.set(email, userId);
+    console.log(`[register] ${email} → ${userId}`);
+  }
+  res.json({ ok: true });
+});
+
 // ── GET /my-engagement?email=XXX  (agent-specific) ────────────────────────
 app.get('/my-engagement', (req, res) => {
   pruneExpired();
-  const key = (req.query.email || req.query.agentId || '').toLowerCase();
-  if (!key) return res.json({ ok: false, error: 'email or agentId required' });
+  const email   = (req.query.email   || '').toLowerCase();
+  const userId  = (req.query.userId  || req.query.agentId || '').trim();
+
+  // Try direct userId lookup first, then email→userId lookup, then email directly
+  const key = userId
+    || (email && emailToUserId.get(email))
+    || email;
+
+  if (!key) return res.json({ ok: false, error: 'email or userId required' });
 
   const mapping = agentToPhone.get(key);
   if (!mapping) return res.json({ ok: false, error: 'No active engagement for this agent' });
