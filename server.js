@@ -79,10 +79,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 const STORE_TTL_MS  = 4 * 60 * 60 * 1000; // 4 hours
 const AGENT_TTL_MS  = 2 * 60 * 60 * 1000; // 2 hours
 
-// Phone → CRM data (populated by Zoom CC flow HTTP Request widget)
+// Phone/engagementId → CRM data (populated by Zoom CC flow HTTP Request widget)
+// Key is phone number for voice, engagementId for video/chat (no phone available)
 const engagementStore = new Map();
 
-// AgentEmail/AgentId → phone (populated by Zoom CC webhook)
+// AgentEmail/AgentId → { storeKey, ts } (populated by Zoom CC webhook)
+// storeKey is phone for voice, engagementId for video/chat
 const agentToPhone = new Map();
 
 // Email → userId mapping (populated by panel on load via /register-agent)
@@ -93,6 +95,10 @@ let latestPhone = null;
 
 // Long-poll waiting clients: key → { res, timer, since }
 const waitingClients = new Map();
+
+// Dedup map: `${agentId}:${storeKey}` → ts
+// Prevents double-pop when Zoom fires both video + chat events for the same answer
+const recentEngagements = new Map();
 
 function notifyWaitingClients(keys, phone, mappingTs) {
   const data = engagementStore.get(phone);
@@ -131,14 +137,23 @@ function pruneExpired() {
   for (const [k, v] of agentToPhone) {
     if (now - v.ts > AGENT_TTL_MS) agentToPhone.delete(k);
   }
+  for (const [k, v] of recentEngagements) {
+    if (now - v > 60000) recentEngagements.delete(k);
+  }
 }
 
 // ── POST /flow-data ───────────────────────────────────────────────────────
 // Called by Zoom CC flow HTTP Request widget before routing to queue.
+// Voice calls use phone as the store key.
+// Video/chat calls have no phone — use engagementId as the store key instead.
 app.post('/flow-data', (req, res) => {
   pruneExpired();
-  const phone = normalizePhone(req.body.phone);
-  if (!phone) return res.status(400).json({ ok: false, error: 'phone required' });
+  const phone        = normalizePhone(req.body.phone);
+  const engagementId = (req.body.engagementId || '').trim();
+
+  // Use phone if available, fall back to engagementId for video/chat
+  const storeKey = phone || engagementId;
+  if (!storeKey) return res.status(400).json({ ok: false, error: 'phone or engagementId required' });
 
   const entry = {
     customerId:       req.body.customerId       || '',
@@ -148,13 +163,15 @@ app.post('/flow-data', (req, res) => {
     partnerName:      req.body.partnerName      || '',
     recommendedRoute: req.body.recommendedRoute || '',
     phone,
+    engagementId,
+    storeKey,
     ts: Date.now(),
   };
-  engagementStore.set(phone, entry);
+  engagementStore.set(storeKey, entry);
   // NOTE: latestPhone is intentionally NOT set here.
   // It is set in the webhook handler when an agent actually answers,
   // so /latest-engagement only fires after answer — not when the call enters the flow.
-  console.log(`[flow-data] stored for ${phone}`);
+  console.log(`[flow-data] stored for storeKey=${storeKey} (phone=${phone || 'none'} engagementId=${engagementId || 'none'})`);
   res.json({ ok: true });
 });
 
@@ -244,15 +261,38 @@ app.post('/webhook/zoom-cc', (req, res) => {
     );
     const phone = normalizePhone(rawPhone);
 
-    if (phone && (agentId || agentEmail)) {
-      const mapping = { phone, ts: Date.now() };
+    // Extract engagementId — used as store key for video/chat where phone is absent
+    const engagementId = (
+      obj.engagement_id   ||
+      obj.engagementId    ||
+      payload.engagement_id ||
+      ''
+    ).trim();
+
+    // Use phone if available (voice), fall back to engagementId (video/chat)
+    const storeKey = phone || engagementId;
+
+    if (storeKey && (agentId || agentEmail)) {
+      // ── Dedup: Zoom fires both a video AND chat event for the same video answer ──
+      // Skip if we already handled this agent+engagement within the last 10 seconds
+      const dedupeKey = `${agentId || agentEmail}:${storeKey}`;
+      const lastHandled = recentEngagements.get(dedupeKey);
+      if (lastHandled && Date.now() - lastHandled < 10000) {
+        console.log(`[webhook] Duplicate event skipped for ${dedupeKey}`);
+        return res.json({ ok: true });
+      }
+      recentEngagements.set(dedupeKey, Date.now());
+      // Clean up dedup map after 30s
+      setTimeout(() => recentEngagements.delete(dedupeKey), 30000);
+
+      const mapping = { phone: storeKey, ts: Date.now() };
       if (agentId)    agentToPhone.set(agentId, mapping);
       if (agentEmail) agentToPhone.set(agentEmail, mapping);
-      latestPhone = phone; // only set here so /latest-engagement fires on answer, not on flow entry
-      console.log(`[webhook] Agent ${agentId || agentEmail} (${obj.user_display_name || ''}) answered call from ${phone}`);
+      if (phone) latestPhone = phone; // only set for voice calls
+      console.log(`[webhook] Agent ${agentId || agentEmail} (${obj.user_display_name || ''}) answered — storeKey=${storeKey} (phone=${phone || 'none'} engagementId=${engagementId || 'none'})`);
 
       // Notify any long-polling clients waiting on userId or email right away
-      notifyWaitingClients([agentId, agentEmail], phone, mapping.ts);
+      notifyWaitingClients([agentId, agentEmail], storeKey, mapping.ts);
 
       // Async: look up agent's email from Zoom API so email-based polls also work
       if (agentId && !agentEmail) {
@@ -262,12 +302,12 @@ app.post('/webhook/zoom-cc', (req, res) => {
             emailToUserId.set(email, agentId);
             console.log(`[webhook] Resolved ${agentId} → ${email}`);
             // Notify clients waiting on email key
-            notifyWaitingClients([email], phone, mapping.ts);
+            notifyWaitingClients([email], storeKey, mapping.ts);
           }
         }).catch(() => {});
       }
     } else {
-      console.warn('[webhook] Could not extract agent or phone. agentId:', agentId, 'phone:', phone, 'obj:', JSON.stringify(obj).substring(0, 200));
+      console.warn('[webhook] Could not extract agent or storeKey. agentId:', agentId, 'phone:', phone, 'engagementId:', engagementId, 'obj:', JSON.stringify(obj).substring(0, 200));
     }
   }
 
