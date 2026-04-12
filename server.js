@@ -21,24 +21,32 @@ async function getZoomToken() {
     );
     const d = await r.json();
     if (d.access_token) {
-      _zoomToken = d.access_token;
+      _zoomToken      = d.access_token;
+      _zoomApiBase    = (d.api_url || 'https://api.zoom.us').replace(/\/$/, '');
       _zoomTokenExpiry = Date.now() + d.expires_in * 1000;
+      console.log(`[zoom-token] OK scope="${d.scope}" api=${_zoomApiBase}`);
       return _zoomToken;
     }
-  } catch (_) {}
+    console.warn('[zoom-token] Failed:', JSON.stringify(d));
+  } catch (e) { console.warn('[zoom-token] Error:', e.message); }
   return null;
 }
+let _zoomApiBase = 'https://api.zoom.us';
 
 async function lookupAgentEmail(userId) {
   const token = await getZoomToken();
   if (!token) return null;
   try {
-    const r = await fetch(`https://api.zoom.us/v2/users/${userId}`,
-      { headers: { Authorization: `Bearer ${token}` } });
-    if (!r.ok) return null;
+    const url = `${_zoomApiBase}/v2/users/${userId}`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     const d = await r.json();
+    if (!r.ok) {
+      console.warn(`[zoom-lookup] Failed for ${userId}: ${d.message || r.status}`);
+      return null;
+    }
+    console.log(`[zoom-lookup] ${userId} → ${d.email}`);
     return (d.email || '').toLowerCase() || null;
-  } catch (_) { return null; }
+  } catch (e) { console.warn('[zoom-lookup] Error:', e.message); return null; }
 }
 
 // Capture raw body before JSON parsing (needed for webhook signature verification)
