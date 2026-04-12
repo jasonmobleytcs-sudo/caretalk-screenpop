@@ -3,20 +3,40 @@ const POLL_MS = 3000; // check for new calls every 3 seconds
 // Only trigger on calls that arrive AFTER this panel loaded
 let lastSeenTs = Date.now();
 
+// Agent email — stored in localStorage so it survives panel reloads
+let agentEmail = localStorage.getItem('ct_agent_email') || '';
+
 // ── Zoom SDK init ──
 let sdkReady = false;
 async function initSdk() {
   if (typeof zoomSdk === 'undefined') return;
   try {
     await Promise.race([
-      zoomSdk.config({ capabilities: ['openUrl'] }),
+      zoomSdk.config({ capabilities: ['openUrl', 'getUserContext'] }),
       new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 4000))
     ]);
     sdkReady = true;
-    log('Zoom SDK ready — will auto-open browser on next call.');
+    // Try to get agent identity automatically
+    try {
+      const ctx = await zoomSdk.getUserContext();
+      const email = (ctx.email || '').toLowerCase();
+      if (email && !agentEmail) {
+        agentEmail = email;
+        localStorage.setItem('ct_agent_email', email);
+        log('Agent identified via SDK: ' + email);
+        renderEmailUI();
+      }
+    } catch (_) {}
   } catch (e) {
-    log('Zoom SDK unavailable (' + e.message + ') — using clipboard fallback.');
+    log('Zoom SDK unavailable — manual email entry used.');
   }
+}
+
+function renderEmailUI() {
+  const inp = document.getElementById('agent-email-input');
+  if (inp) inp.value = agentEmail;
+  const lbl = document.getElementById('agent-email-label');
+  if (lbl) lbl.textContent = agentEmail ? `Polling as: ${agentEmail}` : 'Enter your Zoom email to receive only your calls';
 }
 
 // ── Helpers ──
@@ -123,7 +143,11 @@ function showScreenpop(url) {
 // ── Auto-poll for new calls ──
 async function pollLatest() {
   try {
-    const res  = await fetch(`${window.location.origin}/latest-engagement`);
+    // Use agent-specific endpoint if we know who this agent is
+    const endpoint = agentEmail
+      ? `/my-engagement?email=${encodeURIComponent(agentEmail)}`
+      : `/latest-engagement`;
+    const res  = await fetch(`${window.location.origin}${endpoint}`);
     const data = await res.json();
 
     if (data.ok && data.ts > lastSeenTs) {
@@ -203,7 +227,17 @@ async function lookupEngagement() {
 document.addEventListener('DOMContentLoaded', () => {
   setStatus('Monitoring for incoming transfers…', 'info');
   log('App loaded. Listening for call transfers automatically.');
-  initSdk(); // attempt Zoom SDK init (needed for openUrl)
+  initSdk();
+  renderEmailUI();
+
+  // Agent email save button
+  document.getElementById('agent-email-save').addEventListener('click', () => {
+    const val = (document.getElementById('agent-email-input').value || '').trim().toLowerCase();
+    agentEmail = val;
+    localStorage.setItem('ct_agent_email', val);
+    renderEmailUI();
+    log(val ? `Agent email saved: ${val}` : 'Agent email cleared — monitoring all calls.');
+  });
 
   // Start polling
   setInterval(pollLatest, POLL_MS);

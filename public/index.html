@@ -145,6 +145,19 @@
 
 <div class="content">
 
+  <!-- Agent email (one-time setup for agent-specific screenpop) -->
+  <div class="card" id="agent-setup-card" style="margin-bottom:10px;">
+    <div style="font-size:11px;color:#888;margin-bottom:6px;" id="agent-email-label">Enter your Zoom email to receive only your calls</div>
+    <div style="display:flex;gap:6px;">
+      <input id="agent-email-input" type="email" placeholder="you@company.com"
+        style="flex:1;padding:7px 10px;border:1.5px solid #d0e1fd;border-radius:6px;font-size:12px;outline:none;" />
+      <button id="agent-email-save"
+        style="padding:7px 12px;background:#2372eb;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">
+        Save
+      </button>
+    </div>
+  </div>
+
   <!-- Phone Lookup -->
   <div class="lookup-row">
     <input id="phone-input" type="tel" placeholder="Caller phone  e.g. 5158830400" />
