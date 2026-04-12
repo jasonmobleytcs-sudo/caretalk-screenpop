@@ -94,15 +94,17 @@ let latestPhone = null;
 // Long-poll waiting clients: key → { res, timer, since }
 const waitingClients = new Map();
 
-function notifyWaitingClients(keys, phone) {
+function notifyWaitingClients(keys, phone, mappingTs) {
   const data = engagementStore.get(phone);
   if (!data) return;
   for (const key of keys) {
     if (!key) continue;
     const client = waitingClients.get(key);
-    if (client && data.ts > client.since) {
+    // Use mappingTs (when THIS agent answered) not data.ts (when CRM data arrived).
+    // This prevents stale mappings from re-firing on a future call to the same phone.
+    if (client && mappingTs > client.since) {
       clearTimeout(client.timer);
-      client.res.json({ ok: true, url: buildUrl(data), ...data });
+      client.res.json({ ok: true, url: buildUrl(data), ...data, ts: mappingTs });
       waitingClients.delete(key);
     }
   }
@@ -250,7 +252,7 @@ app.post('/webhook/zoom-cc', (req, res) => {
       console.log(`[webhook] Agent ${agentId || agentEmail} (${obj.user_display_name || ''}) answered call from ${phone}`);
 
       // Notify any long-polling clients waiting on userId or email right away
-      notifyWaitingClients([agentId, agentEmail], phone);
+      notifyWaitingClients([agentId, agentEmail], phone, mapping.ts);
 
       // Async: look up agent's email from Zoom API so email-based polls also work
       if (agentId && !agentEmail) {
@@ -260,7 +262,7 @@ app.post('/webhook/zoom-cc', (req, res) => {
             emailToUserId.set(email, agentId);
             console.log(`[webhook] Resolved ${agentId} → ${email}`);
             // Notify clients waiting on email key
-            notifyWaitingClients([email], phone);
+            notifyWaitingClients([email], phone, mapping.ts);
           }
         }).catch(() => {});
       }
@@ -302,7 +304,9 @@ app.get('/my-engagement', (req, res) => {
   const data = engagementStore.get(mapping.phone);
   if (!data)  return res.json({ ok: false, error: 'Engagement data not in store' });
 
-  res.json({ ok: true, url: buildUrl(data), ...data });
+  // Use mapping.ts (when THIS agent answered) as the response ts.
+  // This prevents a stale mapping from matching on a later call to the same phone number.
+  res.json({ ok: true, url: buildUrl(data), ...data, ts: mapping.ts });
 });
 
 // ── GET /wait-for-engagement  (long-poll — returns instantly when agent answers) ──
@@ -320,8 +324,10 @@ app.get('/wait-for-engagement', (req, res) => {
   const mapping = agentToPhone.get(key);
   if (mapping) {
     const data = engagementStore.get(mapping.phone);
-    if (data && data.ts > since) {
-      return res.json({ ok: true, url: buildUrl(data), ...data });
+    // Use mapping.ts (when THIS agent answered) so stale mappings don't re-fire
+    // on a later call to the same phone number.
+    if (data && mapping.ts > since) {
+      return res.json({ ok: true, url: buildUrl(data), ...data, ts: mapping.ts });
     }
   }
 
