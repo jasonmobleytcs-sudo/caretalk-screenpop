@@ -30,13 +30,13 @@
       display: block; font-size: 12px; color: #7a9bb5;
       font-weight: 500; margin-bottom: 6px;
     }
-    #email-input, #userid-input {
+    #email-input {
       width: 100%; padding: 9px 12px;
       background: #1a2634; border: 1px solid #2a3a4a;
       border-radius: 8px; color: #e8eaed; font-size: 13px; outline: none;
       transition: border-color .15s;
     }
-    #email-input:focus, #userid-input:focus { border-color: #2f80ed; }
+    #email-input:focus { border-color: #2f80ed; }
     #btn-signin {
       margin-top: 10px; width: 100%; padding: 10px;
       background: #2f80ed; border: none; border-radius: 8px;
@@ -98,8 +98,6 @@
     <div id="signed-out">
       <label for="email-input">Sign in with your Zoom agent email</label>
       <input id="email-input" type="email" placeholder="agent@company.com" autocomplete="email">
-      <label for="userid-input" style="margin-top:10px;">Zoom User ID <span style="color:#3a5a7a;font-weight:400;">(find in Zoom profile URL)</span></label>
-      <input id="userid-input" type="text" placeholder="e.g. vzUtoOpXTGCjKVOec7n48w">
       <button id="btn-signin">Sign In</button>
       <div id="signin-error"></div>
     </div>
@@ -112,7 +110,6 @@
           <span class="status-label">MONITORING CALLS</span>
         </div>
         <div id="agent-email-display"></div>
-        <div id="agent-userid-display" style="font-size:11px;color:#7a9bb5;margin-top:-8px;margin-bottom:14px;word-break:break-all;"></div>
         <button id="btn-signout">Sign Out</button>
       </div>
     </div>

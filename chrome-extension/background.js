@@ -19,22 +19,6 @@ async function getAgentEmail() {
   return r.agentEmail || '';
 }
 
-async function getAgentUserId() {
-  const r = await chrome.storage.local.get(['agentUserId']).catch(() => ({}));
-  return r.agentUserId || '';
-}
-
-// Build query string with email + optional userId
-async function agentParams(extra = {}) {
-  const email  = await getAgentEmail();
-  const userId = await getAgentUserId();
-  const params = new URLSearchParams();
-  if (email)  params.set('email',  email);
-  if (userId) params.set('userId', userId);
-  for (const [k, v] of Object.entries(extra)) params.set(k, v);
-  return params.toString();
-}
-
 // ── Open tab when a new engagement arrives ────────────────────────────────
 async function handleData(data) {
   const lastSeenTs = await getLastSeenTs();
@@ -49,18 +33,20 @@ async function handleData(data) {
 // The in-flight fetch keeps the service worker alive, and we restart
 // immediately on completion — giving near-instant screenpop.
 async function longPoll() {
-  const email = await getAgentEmail();
-  if (!email) {
+  const agentEmail = await getAgentEmail();
+  if (!agentEmail) {
     // Not signed in — check again in 10s in case they sign in
     setTimeout(longPoll, 10000);
     return;
   }
 
   const lastSeenTs = await getLastSeenTs();
-  const qs = await agentParams({ since: lastSeenTs });
 
   try {
-    const res  = await fetch(`${SERVER}/wait-for-engagement?${qs}`, { cache: 'no-store' });
+    const res  = await fetch(
+      `${SERVER}/wait-for-engagement?email=${encodeURIComponent(agentEmail)}&since=${lastSeenTs}`,
+      { cache: 'no-store' }
+    );
     const data = await res.json();
     await handleData(data);
   } catch (err) {
@@ -75,13 +61,14 @@ async function longPoll() {
 
 // ── Alarm-based fallback poll (every 30s safety net) ─────────────────────
 async function poll() {
-  const email = await getAgentEmail();
-  if (!email) return; // not signed in
-
-  const qs = await agentParams();
+  const agentEmail = await getAgentEmail();
+  if (!agentEmail) return; // no email = not signed in, do nothing
 
   try {
-    const res  = await fetch(`${SERVER}/my-engagement?${qs}`, { cache: 'no-store' });
+    const res  = await fetch(
+      `${SERVER}/my-engagement?email=${encodeURIComponent(agentEmail)}`,
+      { cache: 'no-store' }
+    );
     const data = await res.json();
     await handleData(data);
   } catch (err) {
