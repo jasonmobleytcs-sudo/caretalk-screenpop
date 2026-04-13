@@ -2,7 +2,7 @@
 // Polls the server every 5 seconds. When a new call arrives,
 // posts a message which bubbles up to open a Chrome tab.
 
-const SERVER = 'https://caretalk-screenpop.onrender.com';
+const SERVER = 'https://caretalk-screenpop-tlxu.onrender.com';
 
 // Only trigger on calls that arrive AFTER this worker started
 let lastSeenTs = Date.now();

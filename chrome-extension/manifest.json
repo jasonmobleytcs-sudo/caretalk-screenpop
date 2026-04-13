@@ -4,7 +4,7 @@
   "version": "2.0",
   "description": "Automatically opens CareTalk360 in Chrome when a Zoom CC call transfer arrives.",
   "permissions": ["tabs", "alarms", "storage"],
-  "host_permissions": ["https://caretalk-screenpop.onrender.com/*"],
+  "host_permissions": ["https://caretalk-screenpop-tlxu.onrender.com/*"],
   "background": {
     "service_worker": "background.js"
   },

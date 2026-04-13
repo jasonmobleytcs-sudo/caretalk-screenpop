@@ -2,7 +2,7 @@
 // Uses long-polling so the tab opens within ~2 seconds of the agent answering.
 // Falls back to 30-second alarm polling as a safety net.
 
-const SERVER = 'https://caretalk-screenpop.onrender.com';
+const SERVER = 'https://caretalk-screenpop-tlxu.onrender.com';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 async function getLastSeenTs() {
