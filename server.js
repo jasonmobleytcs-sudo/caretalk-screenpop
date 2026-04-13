@@ -432,6 +432,39 @@ app.get('/debug/store',    (req, res) => { pruneExpired(); const e = []; for (co
 app.get('/debug/agents',   (req, res) => { pruneExpired(); const a = []; for (const [key, v] of agentToPhone) a.push({ key, phone: v.phone, age_min: Math.round((Date.now()-v.ts)/60000) }); res.json({ count: a.length, agents: a }); });
 app.get('/debug/webhooks', (req, res) => res.json({ count: webhookLog.length, log: webhookLog }));
 
+// ── S2S token + user-lookup test ──────────────────────────────────────────
+app.get('/debug/s2s', async (req, res) => {
+  const userId = (req.query.userId || 'vzUtoOpXTGCjKVOec7n48w').trim();
+  const report = {
+    env: {
+      ZOOM_S2S_ACCOUNT_ID:     !!process.env.ZOOM_S2S_ACCOUNT_ID,
+      ZOOM_S2S_CLIENT_ID:      !!process.env.ZOOM_S2S_CLIENT_ID,
+      ZOOM_S2S_CLIENT_SECRET:  !!process.env.ZOOM_S2S_CLIENT_SECRET,
+    },
+    token: null,
+    tokenError: null,
+    lookup: null,
+    lookupError: null,
+  };
+  try {
+    const token = await getZoomToken();
+    report.token = token ? 'OK (obtained)' : 'null — getZoomToken returned null';
+    if (token) {
+      try {
+        const url = `${_zoomApiBase}/v2/users/${userId}`;
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        const d = await r.json();
+        if (r.ok) {
+          report.lookup = { email: d.email, display_name: d.display_name, status: d.status };
+        } else {
+          report.lookupError = { status: r.status, body: d };
+        }
+      } catch (e) { report.lookupError = e.message; }
+    }
+  } catch (e) { report.tokenError = e.message; }
+  res.json(report);
+});
+
 // ── Ping ──────────────────────────────────────────────────────────────────
 app.get('/ping', (req, res) => res.json({ ok: true }));
 
