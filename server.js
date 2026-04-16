@@ -125,8 +125,10 @@ function normalizePhone(raw = '') {
 
 function buildUrl(data) {
   return `https://caretalk360.com/dashboard/patient-teleHealth` +
-         `?patientId=${encodeURIComponent(data.customerId || '')}` +
-         `&appointmentId=${encodeURIComponent(data.appointmentId || '')}`;
+         `?page=Forms` +
+         `&patientId=${encodeURIComponent(data.customerId || '')}` +
+         `&patientAppointmentId=${encodeURIComponent(data.appointmentId || '')}` +
+         `&appointmentTypeId=1`;
 }
 
 function pruneExpired() {
