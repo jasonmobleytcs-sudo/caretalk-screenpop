@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto  = require('crypto');
 const path    = require('path');
+const Redis   = require('ioredis');
 const app     = express();
 
 // ── Zoom S2S OAuth — auto-lookup agent email from userId ──────────────────
@@ -144,6 +145,44 @@ function pruneExpired() {
   }
 }
 
+// ── Durable context store (Redis / Render Key Value) ──────────────────────
+// Backs the /context endpoint that the Zoom transfer legs use to recover CRM
+// context by engagementId. Redis SET is atomic per key (no whole-blob rewrite),
+// and it survives service restarts — unlike the in-memory Map above. If
+// REDIS_URL is unset, /context still works off the in-memory Map (not durable).
+const redis = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
+if (redis) {
+  redis.on('error',   (e) => console.error('[redis] error', e.message));
+  redis.on('connect', ()  => console.log('[redis] connected — durable context store enabled'));
+} else {
+  console.warn('[redis] REDIS_URL not set — /context is in-memory only (not durable)');
+}
+const CTX_TTL_SEC = 4 * 60 * 60; // 4h, matches STORE_TTL_MS
+
+async function saveCtx(entry) {
+  if (!redis) return;
+  const json = JSON.stringify(entry);
+  const ops = [];
+  if (entry.engagementId) ops.push(redis.set(`ctx:eng:${entry.engagementId}`, json, 'EX', CTX_TTL_SEC));
+  if (entry.consumerId)   ops.push(redis.set(`ctx:con:${entry.consumerId}`,   json, 'EX', CTX_TTL_SEC));
+  if (ops.length) await Promise.allSettled(ops);
+}
+
+async function getCtx(engagementId, consumerId) {
+  if (redis) {
+    try {
+      let json = engagementId ? await redis.get(`ctx:eng:${engagementId}`) : null;
+      let via  = 'engagementId';
+      if (!json && consumerId) { json = await redis.get(`ctx:con:${consumerId}`); via = 'consumerId'; }
+      if (json) return { data: JSON.parse(json), via };
+    } catch (e) { console.error('[redis] get failed', e.message); }
+  }
+  // Fallback: in-memory Map (storeKey is engagementId for video/chat)
+  const m = (engagementId && engagementStore.get(engagementId)) ||
+            (consumerId   && engagementStore.get(consumerId));
+  return m ? { data: m, via: 'memory' } : null;
+}
+
 // ── POST /flow-data ───────────────────────────────────────────────────────
 // Called by Zoom CC flow HTTP Request widget before routing to queue.
 // Voice calls use phone as the store key.
@@ -170,6 +209,9 @@ app.post('/flow-data', (req, res) => {
     ts: Date.now(),
   };
   engagementStore.set(storeKey, entry);
+  // NEW: also write to durable Redis store keyed by engagementId (+consumerId if present),
+  // so the Zoom transfer legs can recover context via GET /context even after a restart.
+  saveCtx(entry).catch((e) => console.error('[flow-data] saveCtx failed', e.message));
   // NOTE: latestPhone is intentionally NOT set here.
   // It is set in the webhook handler when an agent actually answers,
   // so /latest-engagement only fires after answer — not when the call enters the flow.
@@ -416,6 +458,42 @@ app.get('/get-engagement', (req, res) => {
   res.json({ ok: true, url: buildUrl(data), ...data });
 });
 
+// ── GET /context?engagementId=…&consumerId=…  ─────────────────────────────
+// Durable CRM-context restore for Zoom transfer/video legs. Reads the atomic
+// Redis store (falls back to in-memory Map). Returns the fields the flow's
+// "Set Zoom Variables" widget maps: customerId / stateId / eligibilityId / appointmentId.
+// Auth: x-shared-secret header must match CONTEXT_SHARED_SECRET (returns PHI).
+app.get('/context', async (req, res) => {
+  const want = process.env.CONTEXT_SHARED_SECRET || '';
+  if (want && (req.get('x-shared-secret') || '') !== want) {
+    return res.status(401).json({ ok: false, matched: false, error: 'unauthorized' });
+  }
+  const engagementId = (req.query.engagementId || '').trim();
+  const consumerId   = (req.query.consumerId   || '').trim();
+  if (!engagementId && !consumerId) {
+    return res.status(400).json({ ok: false, matched: false, error: 'engagementId or consumerId required' });
+  }
+  try {
+    const hit = await getCtx(engagementId, consumerId);
+    if (!hit) return res.json({ ok: true, matched: false });
+    const d = hit.data || {};
+    return res.json({
+      ok: true,
+      matched: true,
+      matchType: hit.via,
+      customerId:    d.customerId    || '',
+      appointmentId: d.appointmentId || '',
+      stateId:       d.stateId       || '',
+      eligibilityId: d.eligibilityId || '',
+      engagementId:  d.engagementId  || engagementId,
+      phone:         d.phone         || '',
+    });
+  } catch (e) {
+    console.error('[context] lookup failed', e.message);
+    return res.status(500).json({ ok: false, matched: false, error: 'lookup error' });
+  }
+});
+
 // ── Screenpop tab (served to real Chrome, relaxed CSP) ────────────────────
 app.get('/screenpop-tab', (req, res) => {
   res.setHeader('Content-Security-Policy',
@@ -433,6 +511,12 @@ app.get('/screenpop-tab', (req, res) => {
 app.get('/debug/store',    (req, res) => { pruneExpired(); const e = []; for (const [phone, v] of engagementStore) e.push({ phone, ...v, age_min: Math.round((Date.now()-v.ts)/60000) }); res.json({ count: e.length, entries: e }); });
 app.get('/debug/agents',   (req, res) => { pruneExpired(); const a = []; for (const [key, v] of agentToPhone) a.push({ key, phone: v.phone, age_min: Math.round((Date.now()-v.ts)/60000) }); res.json({ count: a.length, agents: a }); });
 app.get('/debug/webhooks', (req, res) => res.json({ count: webhookLog.length, log: webhookLog }));
+app.get('/debug/context',  async (req, res) => {
+  const engagementId = (req.query.engagementId || '').trim();
+  const consumerId   = (req.query.consumerId   || '').trim();
+  const hit = await getCtx(engagementId, consumerId);
+  res.json({ ok: true, redis: !!redis, found: !!hit, via: hit?.via || null, data: hit?.data || null });
+});
 
 // ── S2S token + user-lookup test ──────────────────────────────────────────
 app.get('/debug/s2s', async (req, res) => {
