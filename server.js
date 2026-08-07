@@ -206,6 +206,7 @@ app.post('/flow-data', (req, res) => {
   pruneExpired();
   const phone        = normalizePhone(req.body.phone);
   const engagementId = (req.body.engagementId || '').trim();
+  const consumerId   = (req.body.consumerId || '').trim();
 
   // Use phone if available, fall back to engagementId for video/chat
   const storeKey = phone || engagementId;
@@ -220,6 +221,7 @@ app.post('/flow-data', (req, res) => {
     recommendedRoute: req.body.recommendedRoute || '',
     phone,
     engagementId,
+    consumerId,
     storeKey,
     ts: Date.now(),
   };
@@ -230,7 +232,7 @@ app.post('/flow-data', (req, res) => {
   // NOTE: latestPhone is intentionally NOT set here.
   // It is set in the webhook handler when an agent actually answers,
   // so /latest-engagement only fires after answer — not when the call enters the flow.
-  console.log(`[flow-data] stored for storeKey=${storeKey} (phone=${phone || 'none'} engagementId=${engagementId || 'none'})`);
+  console.log(`[flow-data] stored for storeKey=${storeKey} (phone=${phone || 'none'} engagementId=${engagementId || 'none'} consumerId=${consumerId || 'none'})`);
   res.json({ ok: true });
 });
 
