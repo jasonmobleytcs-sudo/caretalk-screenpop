@@ -55,6 +55,21 @@ app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf.toString(); }
 }));
 
+// Tolerate a malformed/stray request body instead of hard-failing with a 400.
+// A Zoom CC HttpCall widget set to GET can still carry a leftover body (or an
+// unrendered {{template}}); with Content-Type: application/json that makes
+// express.json() throw entity.parse.failed and the whole request 400s BEFORE
+// reaching the route — which the flow then can't JSON.parse ("Unexpected token '<'")
+// and falls back to state 00. GET /context reads the query string, not the body,
+// so degrade a bad body to {} and let the request proceed normally.
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.parse.failed') {
+    req.body = {};
+    return next();
+  }
+  return next(err);
+});
+
 // ── Security + no-cache headers ───────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
